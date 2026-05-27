@@ -1,0 +1,51 @@
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+*.so
+
+# Streamlit cache
+.streamlit/cache/
+.streamlit/secrets.toml
+
+# Jupyter / IPython
+.ipynb_checkpoints/
+*.ipynb
+
+# Environment / secrets
+.env
+.env.*
+*.env
+secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temp files
+tmp/
+temp/
+outputs/
+*.tmp
+
+# Data files with potentially sensitive info
+# (keep portfolio.csv since it's the demo file — remove this line if needed)
+# portfolio.csv
