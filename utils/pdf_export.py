@@ -154,29 +154,33 @@ def compute_factor_exposures(holdings_df: pd.DataFrame, clean_data: dict, verdic
         v = verdicts.get(ticker) or {}
         wt = row["Portfolio Wt%"] / 100
 
-        # Quality: ROCE (normalized 0–100)
-        roce = d.get("roce") or 0
-        quality_scores.append(min(100, roce * 2.5) * wt)
+        # Quality: ROCE (normalized 0–100); neutral=40 when no Screener data
+        roce = d.get("roce")
+        q = min(100, roce * 2.5) if roce is not None else 40
+        quality_scores.append(q * wt)
 
         # Value: inverted composite score (cheaper = more value exposure)
         score = v.get("score") or 50
         value_scores.append((100 - score) * wt)
 
-        # Growth: PAT CAGR (normalized, cap at 40%)
-        pat_cagr = max(0, min(40, d.get("pat_cagr_3y") or 0))
-        growth_scores.append(pat_cagr * 2.5 * wt)
+        # Growth: PAT CAGR; neutral=40 when no Screener data
+        pat_cagr = d.get("pat_cagr_3y")
+        g = min(100, max(0, pat_cagr) * 2.5) if pat_cagr is not None else 40
+        growth_scores.append(g * wt)
 
         # Momentum: return % (normalized, -50 to +100 → 0 to 100)
         ret = row.get("Return %", 0) or 0
         mom_norm = min(100, max(0, (ret + 50)))
         momentum_scores.append(mom_norm * wt)
 
+    q_total  = round(sum(quality_scores), 1)
+    r_total  = round(100 - q_total * 0.5, 1)
     return {
-        "quality":  round(sum(quality_scores), 1),
+        "quality":  q_total,
         "value":    round(sum(value_scores), 1),
         "growth":   round(sum(growth_scores), 1),
         "momentum": round(sum(momentum_scores), 1),
-        "risk":     round(100 - sum(quality_scores) * 0.5, 1),
+        "risk":     min(100, max(0, r_total)),
     }
 
 
@@ -294,8 +298,18 @@ def _fig_foundational_intelligence(holdings_df, clean_data) -> plt.Figure:
             1 if (d.get("fcf") or 0) > 0 else 0,
         ])
 
-    if not data_matrix:
-        ax.text(0.5, 0.5, "No fundamental data", transform=ax.transAxes, ha="center")
+    # Check if any real fundamental data exists (not all None)
+    has_any_data = any(
+        any(v is not None for v in row[:5])   # first 5 cols (not FCF flag)
+        for row in data_matrix
+    )
+    if not data_matrix or not has_any_data:
+        ax.text(0.5, 0.5,
+                "Upload Screener Excel files to populate this heatmap\n"
+                "(screener.in → company page → Excel button)",
+                transform=ax.transAxes, ha="center", va="center",
+                fontsize=12, color=C["text3"], style="italic")
+        ax.axis("off")
         return fig
 
     mat = np.array([[v if v is not None else 0 for v in row] for row in data_matrix], dtype=float)
@@ -626,14 +640,18 @@ def build_institutional_pdf(
     ]))
     el += [kpi_tbl, Spacer(1, 1.5*cm)]
 
-    # Cover stats
+    # Cover stats — 2-col layout to avoid overflow
     cover_stats = [
-        ["Total Invested", f"₹{ps.get('total_invested',0):,.0f}", "Current Value", f"₹{ps.get('total_current',0):,.0f}"],
-        ["Unrealised P&L",  f"₹{ps.get('total_pnl',0):+,.0f}",  "Active Share",   f"{(risk_metrics or {}).get('active_share',0):.1f}%"],
-        ["Best Performer",  f"{ps.get('best_performer','—')[:20]}  {ps.get('best_return',0):+.1f}%",
-         "Effective N",     f"{(risk_metrics or {}).get('effective_n',0):.1f}"],
+        ["Total Invested",   f"Rs. {ps.get('total_invested',0):,.0f}",
+         "Current Value",    f"Rs. {ps.get('total_current',0):,.0f}"],
+        ["Unrealised P&L",  f"Rs. {ps.get('total_pnl',0):+,.0f}",
+         "Active Share",     f"{(risk_metrics or {}).get('active_share',0):.1f}%"],
+        ["Effective N",      f"{(risk_metrics or {}).get('effective_n',0):.1f}",
+         "Top 5 Weight",     f"{(risk_metrics or {}).get('top5_wt',0):.1f}%"],
+        ["Best Performer",   f"{ps.get('best_performer','—')[:22]}",
+         "Return",           f"{ps.get('best_return',0):+.1f}%"],
     ]
-    cs_tbl = Table(cover_stats, colWidths=[4.5*cm, 5*cm, 4*cm, 4.5*cm])
+    cs_tbl = Table(cover_stats, colWidths=[4.5*cm, 5.5*cm, 4*cm, 4*cm])
     cs_tbl.setStyle(TableStyle([
         ("FONTNAME", (0,0), (0,-1), "Helvetica-Bold"), ("FONTNAME", (2,0), (2,-1), "Helvetica-Bold"),
         ("FONTSIZE", (0,0), (-1,-1), 9), ("GRID", (0,0), (-1,-1), 0.3, BORDER),
@@ -674,6 +692,24 @@ def build_institutional_pdf(
     if inst.get("executive_summary"):
         for p in _md_to_paras(inst["executive_summary"], BODY):
             el += [p]
+    else:
+        # Auto-generate a basic summary from raw stats when AI thesis hasn't run
+        _ret  = ps.get('total_return', 0)
+        _best = ps.get('best_performer', '—')
+        _bret = ps.get('best_return', 0)
+        _wrst = ps.get('worst_performer', '—')
+        _wret = ps.get('worst_return', 0)
+        _as   = (risk_metrics or {}).get('active_share', 0)
+        _eff  = (risk_metrics or {}).get('effective_n', 0)
+        _auto = (
+            f"The portfolio delivered a total return of {_ret:+.2f}% as of {report_date}. "
+            f"The top contributor was {_best} ({_bret:+.1f}%), while {_wrst} ({_wret:+.1f}%) "
+            f"was the weakest performer. "
+            f"With an active share of {_as:.1f}% and {_eff:.1f} effective holdings, "
+            f"this is a concentrated, genuinely active portfolio. "
+            f"Upload Screener Excel files and run the AI Institutional Report for a full narrative analysis."
+        )
+        el += [Paragraph(_auto, BODY)]
     el += [PageBreak()]
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -846,24 +882,27 @@ def build_institutional_pdf(
     # PAGE 13 — UNDERPERFORMERS / RISK POSITIONS
     # ─────────────────────────────────────────────────────────────────────────
     el += [Paragraph("Underperformers & Risk Positions", H1), hr2()]
-    risk_rows = [["Company", "Signal", "Risk Level", "Reason", "Exit Condition"]]
+    risk_rows = [["Company", "Signal", "Reason", "Exit Condition"]]
     for _, row in holdings_df.iterrows():
         ticker = row["Ticker"]
         ac = (actions or {}).get(ticker) or {}
         if ac.get("signal") in ("TRIM", "EXIT"):
             th = st.get(ticker) or {}
-            risk_level = "HIGH" if ac["signal"] == "EXIT" else "MEDIUM"
-            exit_cond  = (th.get("monitoring_framework") or ["See thesis"])[0] if th else "Review position"
+            mf = th.get("monitoring_framework") or [] if th else []
+            exit_cond = str(mf[0])[:50] if mf else "Review at next quarterly results"
+            reason = ac.get("reason", "")
+            # Truncate reason cleanly at word boundary
+            if len(reason) > 80:
+                reason = reason[:77] + "..."
             risk_rows.append([
-                row["Company"][:20],
+                row["Company"][:22],
                 ac.get("signal", ""),
-                risk_level,
-                ac.get("reason", "")[:60],
-                str(exit_cond)[:40],
+                reason,
+                exit_cond,
             ])
 
     if len(risk_rows) > 1:
-        risk_tbl = Table(risk_rows, colWidths=[3.5*cm, 2*cm, 2.5*cm, 6*cm, 4*cm])
+        risk_tbl = Table(risk_rows, colWidths=[4*cm, 2*cm, 9*cm, 5*cm])
         risk_tbl.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,0), NAVY), ("TEXTCOLOR", (0,0), (-1,0), WHITE),
             ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"), ("FONTSIZE", (0,0), (-1,-1), 7.5),
