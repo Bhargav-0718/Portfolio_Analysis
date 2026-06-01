@@ -94,11 +94,24 @@ with st.sidebar:
     analysis_date_input = st.date_input("Analysis Date", value=date.today())
     analysis_date = datetime.combine(analysis_date_input, datetime.min.time())
 
-    st.markdown("### 🔧 Manual Prices")
-    st.caption("For tickers that fail yfinance")
-    tatamotors_price = st.number_input("TATAMOTORS.NS", value=420.50, step=0.5)
-    bbg_price        = st.number_input("BBG.NS",        value=159.05, step=0.5)
-    manual_prices    = {"TATAMOTORS.NS": tatamotors_price, "BBG.NS": bbg_price}
+    # ── Manual Price Overrides (dynamic — driven by loaded portfolio) ────────
+    manual_prices = {}
+    with st.expander("🔧 Manual Price Overrides", expanded=False):
+        _loaded_mp = st.session_state.get("holdings")
+        if _loaded_mp is not None:
+            st.caption("Leave at 0 to fetch automatically. Fill in only tickers that fail yfinance.")
+            for _, _mrow in _loaded_mp.iterrows():
+                _mt = _mrow["Ticker"]
+                _mp = st.number_input(
+                    f"{_mrow['Company'][:28]} ({_mt})",
+                    value=0.0, min_value=0.0, step=0.5,
+                    key=f"mp_{_mt}",
+                    label_visibility="visible",
+                )
+                if _mp > 0:
+                    manual_prices[_mt] = _mp
+        else:
+            st.caption("Run analysis first — your holdings will appear here")
 
     # ── Screener Files (dynamic — driven by loaded portfolio) ────────────────
     st.markdown("### 📊 Screener Files")
@@ -167,6 +180,12 @@ with st.sidebar:
                         width="stretch", disabled=(portfolio_file is None))
     if portfolio_file is None:
         st.info("Upload portfolio.csv to begin")
+
+    # ── Quick navigation hint ─────────────────────────────────────────────────
+    if st.session_state.get("holdings") is not None:
+        st.markdown("---")
+        st.markdown("**📥 Download Report**")
+        st.caption("Go to **🏛️ Institutional Report** tab → Generate PDF Report")
 
 # =============================================================================
 # MAIN ANALYSIS EXECUTION
