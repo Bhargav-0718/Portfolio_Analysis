@@ -91,7 +91,7 @@ with st.sidebar:
     st.markdown("### 📁 Portfolio")
     portfolio_file = st.file_uploader("Upload portfolio.csv", type=["csv"])
 
-    analysis_date_input = st.date_input("Analysis Date", value=date(2026, 1, 5))
+    analysis_date_input = st.date_input("Analysis Date", value=date.today())
     analysis_date = datetime.combine(analysis_date_input, datetime.min.time())
 
     st.markdown("### 🔧 Manual Prices")
