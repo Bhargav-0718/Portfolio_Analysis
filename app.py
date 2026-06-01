@@ -340,7 +340,7 @@ if st.session_state["holdings"] is not None:
         def color_ret(val):
             return "color:#15803D; font-weight:bold" if val >= 0 else "color:#DC2626; font-weight:bold"
 
-        styled = display_df.style.applymap(color_ret, subset=["Return %", "P&L", "Active Bet%"])
+        styled = display_df.style.map(color_ret, subset=["Return %", "P&L", "Active Bet%"])
         styled = styled.format({
             "Avg Buy Price": "₹{:.2f}", "Current Price": "₹{:.2f}",
             "Invested Value": "₹{:,.0f}", "Current Value": "₹{:,.0f}",
@@ -361,7 +361,7 @@ if st.session_state["holdings"] is not None:
             ]].copy()
             sec_display.columns = ["Sector", "Port %", "Bench %", "Active Bet %", "Return %", "# Stocks"]
             def color_bet(v): return "color:#15803D;font-weight:bold" if v > 1 else ("color:#DC2626;font-weight:bold" if v < -1 else "")
-            st.dataframe(sec_display.style.applymap(color_bet, subset=["Active Bet %"]).format({
+            st.dataframe(sec_display.style.map(color_bet, subset=["Active Bet %"]).format({
                 "Port %": "{:.2f}%", "Bench %": "{:.2f}%",
                 "Active Bet %": "{:+.2f}%", "Return %": "{:+.2f}%",
             }), use_container_width=True)
