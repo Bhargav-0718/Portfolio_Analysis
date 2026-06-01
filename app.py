@@ -165,7 +165,7 @@ with st.sidebar:
 
     # ── Run button ────────────────────────────────────────────────────────────
     run_btn = st.button("▶  Run Full Analysis", type="primary",
-                        use_container_width=True, disabled=(portfolio_file is None))
+                        width="stretch", disabled=(portfolio_file is None))
     if portfolio_file is None:
         st.info("Upload portfolio.csv to begin")
 
@@ -358,7 +358,7 @@ if st.session_state["holdings"] is not None:
             "Portfolio Wt%": "{:.2f}%", "Benchmark Wt%": "{:.2f}%",
             "Active Bet%": "{:+.2f}%",
         }, na_rep="—")
-        st.dataframe(styled, use_container_width=True, height=520)
+        st.dataframe(styled, width="stretch", height=520)
 
     # =========================================================================
     # TAB 2 — SECTOR ANALYSIS
@@ -374,14 +374,14 @@ if st.session_state["holdings"] is not None:
             st.dataframe(sec_display.style.map(color_bet, subset=["Active Bet %"]).format({
                 "Port %": "{:.2f}%", "Bench %": "{:.2f}%",
                 "Active Bet %": "{:+.2f}%", "Return %": "{:+.2f}%",
-            }), use_container_width=True)
+            }), width="stretch")
         st.markdown("---")
         if st.session_state["figs_overview"]:
-            st.pyplot(st.session_state["figs_overview"], use_container_width=True)
+            st.pyplot(st.session_state["figs_overview"], width="stretch")
         st.markdown("---")
         st.markdown("#### 5-Year Cumulative Return vs Benchmark")
         if st.session_state["figs_sector"]:
-            st.pyplot(st.session_state["figs_sector"], use_container_width=True)
+            st.pyplot(st.session_state["figs_sector"], width="stretch")
 
     # =========================================================================
     # TAB 3 — ATTRIBUTION
@@ -408,10 +408,10 @@ if st.session_state["holdings"] is not None:
                 "Port_Wt%": "{:.2f}%", "Bench_Wt%": "{:.2f}%",
                 "Active_Bet%": "{:+.2f}%", "Allocation": "{:+.4f}%",
                 "Selection": "{:+.4f}%", "Active_Return": "{:+.4f}%",
-            }), use_container_width=True)
+            }), width="stretch")
         if st.session_state["figs_attribution"]:
             st.markdown("---")
-            st.pyplot(st.session_state["figs_attribution"], use_container_width=True)
+            st.pyplot(st.session_state["figs_attribution"], width="stretch")
 
     # =========================================================================
     # TAB 4 — RISK
@@ -440,7 +440,7 @@ if st.session_state["holdings"] is not None:
                 else: st.info(lvl)
         if st.session_state["figs_risk"]:
             st.markdown("---")
-            st.pyplot(st.session_state["figs_risk"], use_container_width=True)
+            st.pyplot(st.session_state["figs_risk"], width="stretch")
 
     # =========================================================================
     # TAB 5 — VALUATION
@@ -484,7 +484,7 @@ if st.session_state["holdings"] is not None:
                 "EV/EBITDA": "{:.1f}", "ROCE%": "{:.1f}", "ROE%": "{:.1f}",
                 "RevCAGR%": "{:.1f}", "Bear %": "{:+.1f}%", "Bull %": "{:+.1f}%",
                 "Asymmetry": "{:.2f}x",
-            }, na_rep="—"), use_container_width=True)
+            }, na_rep="—"), width="stretch")
 
             st.markdown("---")
             for _, row in holdings.iterrows():
@@ -492,7 +492,9 @@ if st.session_state["holdings"] is not None:
                 d = clean_data.get(ticker) or {}
                 v = verdicts.get(ticker) or {}
                 if not d: continue
-                with st.expander(f"{row['Company']}  |  {v.get('label','—')}  ({v.get('score') or 'N/A':.0f if v.get('score') else 'N/A'}/100)"):
+                _sc = v.get("score")
+                _sc_str = f"{_sc:.0f}" if _sc is not None else "N/A"
+                with st.expander(f"{row['Company']}  |  {v.get('label', '—')}  ({_sc_str}/100)"):
                     c1, c2 = st.columns(2)
                     with c1:
                         st.write(f"Revenue: ₹{d.get('revenue',0) or 0:,.0f} Cr | EBITDA: {d.get('ebitda_margin') or '—'}%")
@@ -506,7 +508,7 @@ if st.session_state["holdings"] is not None:
 
         if st.session_state["figs_valuation"]:
             st.markdown("---")
-            st.pyplot(st.session_state["figs_valuation"], use_container_width=True)
+            st.pyplot(st.session_state["figs_valuation"], width="stretch")
 
     # =========================================================================
     # TAB 6 — SCENARIOS & ACTIONS
@@ -580,7 +582,7 @@ if st.session_state["holdings"] is not None:
             with col1:
                 st.info("Processes uploaded concall PDFs + auto-fetches latest news per holding via yfinance.")
             with col2:
-                run_research_btn = st.button("🔍 Run Research Ingestion", type="primary", use_container_width=True)
+                run_research_btn = st.button("🔍 Run Research Ingestion", type="primary", width="stretch")
 
             if run_research_btn:
                 progress_bar = st.progress(0)
@@ -665,7 +667,7 @@ if st.session_state["holdings"] is not None:
                     "Contrarian → Sector → Structuring → Validation. Generates 12-point institutional thesis + PM Commentary."
                 )
             with col2:
-                gen_btn = st.button("🏛️ Generate Institutional Report", type="primary", use_container_width=True)
+                gen_btn = st.button("🏛️ Generate Institutional Report", type="primary", width="stretch")
 
             if gen_btn:
                 if not context_json:
@@ -715,7 +717,8 @@ if st.session_state["holdings"] is not None:
                 action_lbl  = th.get("action", ac.get("signal", "WATCH"))
                 conv_lbl    = th.get("conviction", ac.get("conviction", "LOW"))
                 role_lbl    = th.get("portfolio_role", sc.get("portfolio_role", "?"))
-                score_str   = f"{(verdicts.get(ticker) or {}).get('score') or 'N/A':.0f}" if isinstance((verdicts.get(ticker) or {}).get("score"), float) else "N/A"
+                _v_score    = (verdicts.get(ticker) or {}).get("score")
+                score_str   = f"{_v_score:.0f}" if _v_score is not None else "N/A"
 
                 with st.expander(
                     f"**{company}**  ·  {row['Portfolio Wt%']:.1f}%  ·  {action_lbl}  ·  {role_lbl}  ·  Score {score_str}/100"
@@ -760,7 +763,7 @@ if st.session_state["holdings"] is not None:
         # ── PDF Download ──────────────────────────────────────────────────────
         st.markdown("---")
         st.markdown("### 📄 Download 18-Page Institutional PDF Report")
-        pdf_btn = st.button("Generate PDF Report", use_container_width=True)
+        pdf_btn = st.button("Generate PDF Report", width="stretch")
         if pdf_btn:
             if not st.session_state["portfolio_stats"]:
                 st.error("Run analysis first.")
@@ -788,7 +791,7 @@ if st.session_state["holdings"] is not None:
                         st.download_button(
                             "⬇️  Download PDF (18 pages)",
                             data=pdf_bytes, file_name=fname,
-                            mime="application/pdf", use_container_width=True,
+                            mime="application/pdf", width="stretch",
                         )
                         st.success(f"✅ {fname} ready for download.")
                     except Exception as e:
