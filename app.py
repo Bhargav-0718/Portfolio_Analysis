@@ -100,25 +100,24 @@ with st.sidebar:
     bbg_price        = st.number_input("BBG.NS",        value=159.05, step=0.5)
     manual_prices    = {"TATAMOTORS.NS": tatamotors_price, "BBG.NS": bbg_price}
 
-    # ── Screener Files ────────────────────────────────────────────────────────
+    # ── Screener Files (dynamic — driven by loaded portfolio) ────────────────
     st.markdown("### 📊 Screener Files")
-    st.caption("Screener.in Excel export per holding")
-    ticker_to_company = {
-        "HINDCOPPER.NS": "Hindustan Copper", "TATAMOTORS.NS": "Tata Motors",
-        "HINDZINC.NS": "Hindustan Zinc",     "TATASTEEL.NS": "Tata Steel",
-        "IDFCFIRSTB.NS": "IDFC First Bank",  "PNB.NS": "Punjab Natl Bank",
-        "EQUITASBNK.NS": "Equitas SFB",      "BANKINDIA.NS": "Bank of India",
-        "INDUSTOWER.NS": "Indus Towers",     "GABRIEL.NS": "Gabriel India",
-        "BORORENEW.NS": "Borosil Renew.",    "JIOFIN.NS": "Jio Financial",
-        "BBG.NS": "BillionBrains",           "ADANIPOWER.NS": "Adani Power",
-        "IEX.NS": "IEX",
-    }
     screener_uploads = {}
     with st.expander("Upload Screener Excels", expanded=False):
-        for ticker, company in ticker_to_company.items():
-            f = st.file_uploader(company, type=["xlsx"], key=f"sc_{ticker}")
-            if f:
-                screener_uploads[ticker] = f
+        _loaded_h = st.session_state.get("holdings")
+        if _loaded_h is not None:
+            st.caption(f"Upload one .xlsx per holding (from screener.in → Excel button)")
+            for _, _row in _loaded_h.iterrows():
+                _t = _row["Ticker"]
+                _btype, _ = BUSINESS_MODEL.get(_t, ("UNKNOWN", _t))
+                if _btype == "ETF":
+                    continue   # ETFs have no Screener page
+                f = st.file_uploader(_row["Company"], type=["xlsx"], key=f"sc_{_t}",
+                                     help=f"{_t}")
+                if f:
+                    screener_uploads[_t] = f
+        else:
+            st.caption("Run analysis first — your holdings will appear here")
 
     st.markdown("---")
 
@@ -495,16 +494,26 @@ if st.session_state["holdings"] is not None:
                 _sc = v.get("score")
                 _sc_str = f"{_sc:.0f}" if _sc is not None else "N/A"
                 with st.expander(f"{row['Company']}  |  {v.get('label', '—')}  ({_sc_str}/100)"):
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.write(f"Revenue: ₹{d.get('revenue',0) or 0:,.0f} Cr | EBITDA: {d.get('ebitda_margin') or '—'}%")
-                        st.write(f"ROCE: {d.get('roce') or '—'}% | ROE: {d.get('roe') or '—'}%")
-                        st.write(f"D/E: {d.get('de_ratio') or '—'}x | ND/EBITDA: {d.get('nd_ebitda') or '—'}x")
-                    with c2:
-                        st.write(f"Rev CAGR 3yr: {d.get('rev_cagr_3y') or '—'}%")
-                        st.write(f"PAT CAGR 3yr: {d.get('pat_cagr_3y') or '—'}%")
-                        if v.get("flags"):
-                            for fl in v["flags"][:4]: st.write(f"• {fl}")
+                    _has_data = d.get("revenue") is not None
+
+                    if not _has_data:
+                        st.info("📂 No Screener file uploaded — upload the Excel from screener.in to see fundamentals.")
+                    else:
+                        def _fmt(val, unit="", fmt=","):
+                            if val is None: return "—"
+                            return f"{val:{fmt}.1f}{unit}" if isinstance(val, float) else f"{val}{unit}"
+
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            rev = d.get("revenue")
+                            st.write(f"Revenue: {'₹{:,.0f} Cr'.format(rev) if rev else '—'} | EBITDA Margin: {_fmt(d.get('ebitda_margin'), '%')}")
+                            st.write(f"ROCE: {_fmt(d.get('roce'), '%')} | ROE: {_fmt(d.get('roe'), '%')}")
+                            st.write(f"D/E: {_fmt(d.get('de_ratio'), 'x')} | ND/EBITDA: {_fmt(d.get('nd_ebitda'), 'x')}")
+                        with c2:
+                            st.write(f"Rev CAGR 3yr: {_fmt(d.get('rev_cagr_3y'), '%')}")
+                            st.write(f"PAT CAGR 3yr: {_fmt(d.get('pat_cagr_3y'), '%')}")
+                            if v.get("flags"):
+                                for fl in v["flags"][:4]: st.write(f"• {fl}")
 
         if st.session_state["figs_valuation"]:
             st.markdown("---")
