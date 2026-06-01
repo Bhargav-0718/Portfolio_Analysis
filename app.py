@@ -14,6 +14,16 @@ import matplotlib.pyplot as plt
 import tempfile, os
 from datetime import datetime, date
 
+# Load .env if present (allows pre-filling API key without re-entering each session)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"), override=False)
+except ImportError:
+    pass  # python-dotenv not installed — sidebar entry still works
+
+_ENV_API_KEY       = os.environ.get("OPENAI_API_KEY", "")
+_ENV_PORTFOLIO_NAME = os.environ.get("PORTFOLIO_NAME", "Portfolio Intelligence Report")
+
 # ── Core modules ──────────────────────────────────────────────────────────────
 from modules.m1_loader     import load_portfolio, fetch_prices, calculate_metrics, portfolio_summary
 from modules.m2_sector     import aggregate_sectors, plot_sector_overview, plot_cumulative_performance
@@ -134,9 +144,12 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # ── API Key ───────────────────────────────────────────────────────────────
-    st.markdown("### 🤖 OpenAI API Key")
-    api_key = st.text_input("GPT-4o mini", type="password", placeholder="sk-...")
+    # ── API Key (loaded from .env — no sidebar input) ────────────────────────
+    api_key = _ENV_API_KEY
+    if api_key:
+        st.success("🤖 GPT-4o mini ready ✅")
+    else:
+        st.warning("⚠️ Set OPENAI_API_KEY in .env to enable AI modules")
 
     st.markdown("---")
 
@@ -551,7 +564,7 @@ if st.session_state["holdings"] is not None:
         st.markdown('<div class="section-header">📰 Research Data Ingestion (M6.2)</div>', unsafe_allow_html=True)
 
         if not api_key:
-            st.warning("Enter OpenAI API key in sidebar to run research ingestion.")
+            st.warning("⚠️ Set OPENAI_API_KEY in the `.env` file to enable research ingestion.")
         else:
             col1, col2 = st.columns([3, 1])
             with col1:
@@ -633,7 +646,7 @@ if st.session_state["holdings"] is not None:
         st.markdown('<div class="section-header">🏛️ Institutional Report — AI Thesis Engine (M6.3)</div>', unsafe_allow_html=True)
 
         if not api_key:
-            st.warning("Enter OpenAI API key in sidebar to generate the institutional report.")
+            st.warning("⚠️ Set OPENAI_API_KEY in the `.env` file to enable AI report generation.")
         else:
             col1, col2 = st.columns([3, 1])
             with col1:
