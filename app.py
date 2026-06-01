@@ -132,15 +132,25 @@ with st.sidebar:
         label_visibility="collapsed",
     )
 
-    # ── Concall Uploads ───────────────────────────────────────────────────────
+    # ── Concall Uploads (dynamic — driven by loaded portfolio) ───────────────
     st.markdown("### 📋 Research — Concall PDFs")
-    st.caption("Upload latest concall transcript per holding (PDF)")
     concall_uploads_raw = {}
     with st.expander("Upload Concall PDFs", expanded=False):
-        for ticker, company in ticker_to_company.items():
-            cf = st.file_uploader(f"{company} concall", type=["pdf"], key=f"cc_{ticker}")
-            if cf:
-                concall_uploads_raw[ticker] = cf.read()
+        _loaded = st.session_state.get("holdings")
+        if _loaded is not None:
+            st.caption(f"{len(_loaded)} holdings from your portfolio")
+            for _, _row in _loaded.iterrows():
+                _ticker  = _row["Ticker"]
+                _company = _row["Company"]
+                cf = st.file_uploader(
+                    _company, type=["pdf"],
+                    key=f"cc_{_ticker}",
+                    help=f"{_ticker}",
+                )
+                if cf:
+                    concall_uploads_raw[_ticker] = cf.read()
+        else:
+            st.caption("Run analysis first — your holdings will appear here")
 
     st.markdown("---")
 
