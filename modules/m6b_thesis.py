@@ -562,4 +562,187 @@ def generate_institutional_report(
         "Turnaround / Special Situations"
     )
 
+    # Generate page-level insights for the PDF
+    if progress_callback:
+        progress_callback("pages", "Generating page-level AI insights for PDF...")
+    report["page_insights"] = generate_page_insights(context_json, report, philosophy, client)
+
     return report
+
+
+# =============================================================================
+# PAGE-LEVEL AI INSIGHTS FOR PDF REPORT
+# =============================================================================
+
+def _rule_based_page_insight(page: str, context: dict, report: dict) -> str:
+    """Fallback rule-based insight when AI hasn't been run."""
+    ps   = context.get("portfolio_summary", {})
+    rm   = context.get("risk_metrics", {})
+    attr = context.get("attribution", {})
+    asig = context.get("action_summary", {})
+
+    fallbacks = {
+        "attribution": (
+            f"The portfolio generated {attr.get('total_alpha', 0):+.2f}% alpha vs benchmark. "
+            f"Allocation effect of {attr.get('allocation_effect', 0):+.4f}% indicates "
+            f"{'sector timing was the primary driver' if abs(attr.get('allocation_effect',0)) > abs(attr.get('selection_effect',0)) else 'stock selection was the primary alpha source'}. "
+            f"A positive allocation effect means overweighted sectors outperformed benchmark."
+        ),
+        "heatmap": (
+            "Green cells indicate above-average financial strength relative to portfolio peers; "
+            "red cells indicate relative weakness. Columns represent ROCE, EBITDA margin, PAT CAGR, "
+            "D/E (inverted — lower is better), ND/EBITDA (inverted), and FCF quality. "
+            "Upload Screener Excel files to populate all metrics."
+        ),
+        "structure": (
+            f"The portfolio holds {ps.get('num_holdings', 0)} stocks across multiple sectors. "
+            f"Top 5 positions account for {rm.get('top5_wt', 0):.1f}% of the portfolio. "
+            f"Active share of {rm.get('active_share', 0):.1f}% means "
+            f"{'this is a high-conviction, genuinely active portfolio' if rm.get('active_share',0) > 60 else 'the portfolio tracks the benchmark closely'}."
+        ),
+        "regime": (
+            f"Portfolio is positioned as {asig.get('regime', 'Balanced')}. "
+            "The regime score reflects the balance between accumulate and reduce signals. "
+            "A risk-on regime suggests broad conviction across holdings; defensive tilts indicate caution."
+        ),
+        "themes": (
+            "Investment themes cluster holdings by business model. Each theme represents "
+            "a coherent macro or sector bet. Theme concentration indicates where the portfolio "
+            "is taking its largest active positions."
+        ),
+        "underperformers": (
+            "Positions flagged here show a decision score below the HOLD threshold. "
+            "Review triggers are defined by the monitoring framework. "
+            "Consider trimming at next liquidity event or results season."
+        ),
+        "risk_dashboard": (
+            f"Portfolio risk is driven primarily by concentration — "
+            f"HHI of {rm.get('hhi', 0):.0f} with effective N of {rm.get('effective_n', 0):.1f}. "
+            f"Hit rate of {rm.get('hit_rate', 0):.1f}% shows "
+            f"{'majority of positions profitable' if rm.get('hit_rate',0) > 60 else 'below-median stock picking success rate'}."
+        ),
+        "radar": (
+            "The radar chart shows five factor exposures relative to neutral (50). "
+            "Strong momentum (high returns portfolio) combined with moderate value exposure "
+            "suggests a momentum-driven portfolio. Quality below neutral indicates "
+            "limited Screener data — upload Excel files for accurate quality assessment."
+        ),
+        "monitoring": (
+            "The monitoring framework provides stock-specific triggers for reassessment. "
+            "KPIs should be tracked quarterly at results season. "
+            "An invalidation event (thesis breakdown) warrants immediate review of the position."
+        ),
+    }
+    return fallbacks.get(page, "Detailed analysis available after running the AI Institutional Report.")
+
+
+def generate_page_insights(
+    context: dict,
+    report: dict,
+    philosophy: str,
+    client: OpenAI,
+) -> dict:
+    """
+    Generate 3–5 sentence AI insights for each PDF page.
+    These explain the numbers in plain English for any reader.
+    Returns: {page_name: insight_text}
+    """
+    ps   = context.get("portfolio_summary", {})
+    rm   = context.get("risk_metrics", {})
+    attr = context.get("attribution", {})
+    asig = context.get("action_summary", {})
+
+    def _insight(page: str, data_summary: str) -> str:
+        prompt = (
+            f"You are writing a 3-sentence explanation of one page in a portfolio report.\n"
+            f"Page: {page}\n"
+            f"Data: {data_summary}\n\n"
+            f"Rules:\n"
+            f"- Write in plain English that any investor can understand\n"
+            f"- Interpret what the numbers MEAN, not just what they are\n"
+            f"- Lead with the most important insight\n"
+            f"- Mention specific numbers from the data\n"
+            f"- End with one actionable implication\n"
+            f"Output: 3 sentences only. No headers. No bullet points."
+        )
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                max_tokens=150,
+                messages=[
+                    {"role": "system", "content": "You are a senior portfolio analyst writing clear, concise explanations."},
+                    {"role": "user",   "content": prompt},
+                ],
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception:
+            return _rule_based_page_insight(page, context, report)
+
+    insights = {}
+
+    # Page 3 — Attribution
+    alloc = attr.get("allocation_effect", 0)
+    sel   = attr.get("selection_effect", 0)
+    alpha = attr.get("total_alpha", 0)
+    insights["attribution"] = _insight("Performance Attribution (BHB Model)",
+        f"Total alpha: {alpha:+.2f}%. Allocation effect: {alloc:+.4f}% "
+        f"(sector timing). Selection effect: {sel:+.4f}% (stock picking). "
+        f"Portfolio return: {attr.get('total_port_return',0):+.2f}% vs benchmark: {attr.get('total_bench_return',0):+.2f}%.")
+
+    # Page 4 — Heatmap
+    has_screener = any(
+        h.get("fundamentals", {}).get("data_source") == "screener"
+        for h in context.get("holdings", {}).values()
+    )
+    insights["heatmap"] = _insight("Financial Strength Heatmap",
+        f"Heatmap shows relative strength across ROCE, EBITDA margin, PAT CAGR, D/E, ND/EBITDA, FCF quality. "
+        f"Data source: {'Screener Excel (high accuracy)' if has_screener else 'yfinance (upload Screener Excel for better accuracy)'}. "
+        f"Green=strong, red=weak vs portfolio peers.")
+
+    # Page 5 — Portfolio Structure
+    insights["structure"] = _insight("Portfolio Structure Snapshot",
+        f"{ps.get('num_holdings',0)} holdings. Top 5 weight: {rm.get('top5_wt',0):.1f}%. "
+        f"Active share: {rm.get('active_share',0):.1f}%. Effective N: {rm.get('effective_n',0):.1f}. "
+        f"HHI concentration: {rm.get('hhi',0):.0f}.")
+
+    # Page 6 — Regime
+    insights["regime"] = _insight("Market Regime & Factor Environment",
+        f"Portfolio regime: {asig.get('regime', 'Balanced')}. "
+        f"Increase signals: {asig.get('increase_count',0)}, "
+        f"Reduce signals: {asig.get('reduce_count',0)}, Hold: {asig.get('hold_count',0)}. "
+        f"Net bias: {asig.get('net_bias', 'NEUTRAL')}.")
+
+    # Page 7 — Themes
+    insights["themes"] = _insight("Investment Themes",
+        f"Portfolio clustered into thematic groups. "
+        f"Top opportunities: {', '.join(asig.get('top_opportunities',[])[:3])}. "
+        f"Net bias: {asig.get('net_bias','NEUTRAL')}.")
+
+    # Page 13 — Underperformers
+    reduce_cands = asig.get("reduce_candidates", [])
+    insights["underperformers"] = _insight("Underperformers & Risk Positions",
+        f"Positions with REDUCE/STRONG_REDUCE signals: {', '.join(reduce_cands[:4]) or 'none'}. "
+        f"Total reduce signals: {asig.get('reduce_count',0)}. "
+        f"These failed to meet the decision score threshold (>=55 for HOLD).")
+
+    # Page 15 — Risk Dashboard
+    insights["risk_dashboard"] = _insight("Risk Dashboard",
+        f"Active share: {rm.get('active_share',0):.1f}%, HHI: {rm.get('hhi',0):.0f}, "
+        f"Effective N: {rm.get('effective_n',0):.1f}. "
+        f"Beta: {rm.get('beta','N/A')}, Sharpe: {rm.get('sharpe','N/A')}, "
+        f"Max drawdown 1yr: {rm.get('max_drawdown','N/A')}%, "
+        f"Risk bucket: {rm.get('risk_bucket','Unknown')}.")
+
+    # Page 16 — Radar / Factor Signal Aggregation
+    insights["radar"] = _insight("Portfolio Signal Aggregation (Factor Radar)",
+        f"Five factor exposures: Quality, Growth, Momentum, Value, Risk-Adj. "
+        f"Momentum driven by portfolio return of {ps.get('total_return',0):+.1f}%. "
+        f"Quality/Growth scores reflect {'Screener data' if has_screener else 'limited data — upload Screener Excel'}.")
+
+    # Page 17 — Monitoring Framework
+    insights["monitoring"] = _insight("Monitoring Framework",
+        f"Monitoring framework for {ps.get('num_holdings',0)} holdings. "
+        f"Top opportunities to track: {', '.join(asig.get('top_opportunities',[])[:3]) or 'none'}. "
+        f"Review triggers: quarterly earnings, management guidance changes, debt level shifts.")
+
+    return insights

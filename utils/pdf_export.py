@@ -563,6 +563,28 @@ def _fig_themes(themes: list) -> plt.Figure:
 # MAIN PDF BUILDER — 18 PAGES
 # =============================================================================
 
+def _insight_box(text: str, insight_style) -> list:
+    """Render an AI insight as a shaded callout box."""
+    if not text:
+        return []
+    elements = [Spacer(1, 4)]
+    tbl = Table(
+        [[Paragraph(f"<b>AI Insight:</b> {text}", insight_style)]],
+        colWidths=[17 * cm],
+    )
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#EFF6FF")),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING",   (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 6),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#93C5FD")),
+    ]))
+    elements.append(tbl)
+    elements.append(Spacer(1, 4))
+    return elements
+
+
 def build_institutional_pdf(
     report_date: str,
     portfolio_stats: dict,
@@ -591,18 +613,28 @@ def build_institutional_pdf(
                             title=portfolio_name)
 
     # ── Style definitions ──────────────────────────────────────────────────
-    H1    = _style("H1",  fontName="Helvetica-Bold", fontSize=16, textColor=NAVY, spaceBefore=10, spaceAfter=4)
-    H2    = _style("H2",  fontName="Helvetica-Bold", fontSize=11, textColor=BLUE, spaceBefore=8,  spaceAfter=3)
-    H3    = _style("H3",  fontName="Helvetica-Bold", fontSize=9.5, textColor=NAVY, spaceBefore=5, spaceAfter=2)
-    BODY  = _style("BD",  fontName="Helvetica", fontSize=9,   textColor=NAVY, spaceAfter=3, leading=13)
-    SMALL = _style("SM",  fontName="Helvetica", fontSize=7.5, textColor=GRAY, spaceAfter=2, leading=11)
-    MONO  = _style("MN",  fontName="Courier",   fontSize=8,   textColor=NAVY, spaceAfter=2)
-    BOLD  = _style("BLD", fontName="Helvetica-Bold", fontSize=9, textColor=NAVY, spaceAfter=2)
+    H1      = _style("H1",  fontName="Helvetica-Bold", fontSize=16, textColor=NAVY, spaceBefore=10, spaceAfter=4)
+    H2      = _style("H2",  fontName="Helvetica-Bold", fontSize=11, textColor=BLUE, spaceBefore=8,  spaceAfter=3)
+    H3      = _style("H3",  fontName="Helvetica-Bold", fontSize=9.5, textColor=NAVY, spaceBefore=5, spaceAfter=2)
+    BODY    = _style("BD",  fontName="Helvetica", fontSize=9,   textColor=NAVY, spaceAfter=3, leading=13)
+    SMALL   = _style("SM",  fontName="Helvetica", fontSize=7.5, textColor=GRAY, spaceAfter=2, leading=11)
+    MONO    = _style("MN",  fontName="Courier",   fontSize=8,   textColor=NAVY, spaceAfter=2)
+    BOLD    = _style("BLD", fontName="Helvetica-Bold", fontSize=9, textColor=NAVY, spaceAfter=2)
+    INSIGHT = _style("INS", fontName="Helvetica", fontSize=8.5, textColor=colors.HexColor("#1E40AF"),
+                     spaceAfter=2, leading=13)
 
     ps      = portfolio_stats or {}
     inst    = institutional_report or {}
     st      = inst.get("stock_theses", {})
+    pi      = inst.get("page_insights", {})   # AI page-level insights
     el      = []   # elements list
+
+    def _ai(page_key: str) -> list:
+        """Embed AI insight box for a given page key if available."""
+        text = pi.get(page_key, "")
+        if not text:
+            return []
+        return _insight_box(text, INSIGHT)
 
     def hr(): return HRFlowable(width="100%", thickness=0.5, color=BORDER, spaceAfter=6)
     def hr2(): return HRFlowable(width="100%", thickness=2, color=BLUE, spaceAfter=8)
@@ -732,7 +764,9 @@ def build_institutional_pdf(
         ]))
         el += [at_tbl, Spacer(1, 0.4*cm)]
     fig_attr = _fig_performance_attribution(attrib_df, holdings_df, attribution_summary, factors)
-    el += [_fig_to_image(fig_attr), PageBreak()]
+    el += [_fig_to_image(fig_attr)]
+    el += _ai("attribution")
+    el += [PageBreak()]
 
     # ─────────────────────────────────────────────────────────────────────────
     # PAGE 4 — FOUNDATIONAL INTELLIGENCE
@@ -742,6 +776,7 @@ def build_institutional_pdf(
     el += [_fig_to_image(fig_found)]
     el += [Paragraph("Heatmap: green = relative strength, red = relative weakness vs portfolio peers. "
                      "Columns: ROCE, EBITDA margin, PAT CAGR, D/E (inverted), ND/EBITDA (inverted), FCF quality.", SMALL)]
+    el += _ai("heatmap")
     el += [PageBreak()]
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -749,14 +784,18 @@ def build_institutional_pdf(
     # ─────────────────────────────────────────────────────────────────────────
     el += [Paragraph("Portfolio Structure Snapshot", H1), hr2()]
     fig_struct = _fig_portfolio_structure(holdings_df, sector_df, factors)
-    el += [_fig_to_image(fig_struct), PageBreak()]
+    el += [_fig_to_image(fig_struct)]
+    el += _ai("structure")
+    el += [PageBreak()]
 
     # ─────────────────────────────────────────────────────────────────────────
     # PAGE 6 — MARKET REGIME & FACTOR ENVIRONMENT
     # ─────────────────────────────────────────────────────────────────────────
     el += [Paragraph("Market Regime & Factor Environment", H1), hr2()]
     fig_regime = _fig_market_regime(factors, risk_metrics)
-    el += [_fig_to_image(fig_regime), PageBreak()]
+    el += [_fig_to_image(fig_regime)]
+    el += _ai("regime")
+    el += [PageBreak()]
 
     # ─────────────────────────────────────────────────────────────────────────
     # PAGE 7 — INVESTMENT THEMES
@@ -771,6 +810,7 @@ def build_institutional_pdf(
             for s in theme_data["stocks"]
         )
         el += [Paragraph(stocks_line, SMALL), Spacer(1, 3)]
+    el += _ai("themes")
     el += [PageBreak()]
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -912,6 +952,7 @@ def build_institutional_pdf(
         el += [risk_tbl]
     else:
         el += [Paragraph("No positions currently flagged for exit. All held positions are within conviction range.", BODY)]
+    el += _ai("underperformers")
     el += [PageBreak()]
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -950,6 +991,7 @@ def build_institutional_pdf(
         for flag in risk_flags:
             lvl = flag.get("level", str(flag)) if isinstance(flag, dict) else str(flag)
             el += [Paragraph(f"  {lvl}", BODY)]
+    el += _ai("risk_dashboard")
     el += [PageBreak()]
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -978,7 +1020,9 @@ def build_institutional_pdf(
         ("GRID", (0,0), (-1,-1), 0.3, BORDER), ("PADDING", (0,0), (-1,-1), 5),
         ("ROWBACKGROUNDS", (0,1), (-1,-1), [WHITE, LIGHT]),
     ]))
-    el += [Spacer(1, 0.3*cm), sig_tbl, PageBreak()]
+    el += [Spacer(1, 0.3*cm), sig_tbl]
+    el += _ai("radar")
+    el += [PageBreak()]
 
     # ─────────────────────────────────────────────────────────────────────────
     # PAGE 17 — MONITORING FRAMEWORK
@@ -1010,7 +1054,9 @@ def build_institutional_pdf(
         ("GRID", (0,0), (-1,-1), 0.3, BORDER), ("PADDING", (0,0), (-1,-1), 4),
         ("ROWBACKGROUNDS", (0,1), (-1,-1), [WHITE, LIGHT]),
     ]))
-    el += [mon_tbl, PageBreak()]
+    el += [mon_tbl]
+    el += _ai("monitoring")
+    el += [PageBreak()]
 
     # ─────────────────────────────────────────────────────────────────────────
     # PAGE 18 — PM COMMENTARY
