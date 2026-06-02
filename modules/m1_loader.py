@@ -139,6 +139,63 @@ def calculate_metrics(holdings: pd.DataFrame, prices: dict) -> pd.DataFrame:
     return df
 
 
+def compute_max_drawdown(
+    holdings: pd.DataFrame,
+    analysis_date: datetime,
+    lookback_years: int = 1,
+) -> tuple:
+    """
+    Compute portfolio-weighted 1-year rolling max drawdown.
+    Returns (max_drawdown_pct, risk_bucket).
+    """
+    import warnings
+    warnings.filterwarnings("ignore")
+
+    start = (analysis_date - timedelta(days=365 * lookback_years)).strftime("%Y-%m-%d")
+    end   = analysis_date.strftime("%Y-%m-%d")
+
+    price_data = {}
+    for _, row in holdings.iterrows():
+        ticker = row["Ticker"]
+        try:
+            data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+            if not data.empty and "Close" in data.columns:
+                price_data[ticker] = data["Close"].dropna()
+        except Exception:
+            pass
+
+    if not price_data:
+        return None, "Unknown"
+
+    prices_df  = pd.DataFrame(price_data).dropna(how="all")
+    weight_map = dict(zip(holdings["Ticker"], holdings["Portfolio Wt%"] / 100))
+    port_idx   = pd.Series(0.0, index=prices_df.index)
+
+    for ticker, wt in weight_map.items():
+        if ticker in prices_df.columns:
+            s = prices_df[ticker].dropna()
+            if len(s) > 1:
+                port_idx = port_idx.add(((s / s.iloc[0]) * wt), fill_value=0)
+
+    port_cum  = port_idx.dropna()
+    if len(port_cum) < 10:
+        return None, "Unknown"
+
+    roll_max  = port_cum.cummax()
+    drawdown  = (port_cum - roll_max) / roll_max * 100
+    max_dd    = round(float(drawdown.min()), 2)
+
+    # Risk bucket per spec
+    if max_dd > -5:      bucket = "Low"
+    elif max_dd > -12:   bucket = "Moderate"
+    elif max_dd > -20:   bucket = "High"
+    else:                bucket = "Very High"
+
+    return max_dd, bucket
+
+
 def portfolio_summary(holdings: pd.DataFrame) -> dict:
     """Compute top-level portfolio statistics."""
     total_invested = holdings["Invested Value"].sum()
@@ -166,4 +223,7 @@ def portfolio_summary(holdings: pd.DataFrame) -> dict:
         "largest_position": largest["Company"],
         "largest_wt": largest["Portfolio Wt%"],
         "top5_wt": holdings.nlargest(5, "Portfolio Wt%")["Portfolio Wt%"].sum(),
+        # Populated later after max drawdown is computed
+        "max_drawdown": None,
+        "risk_bucket": "Unknown",
     }

@@ -408,3 +408,350 @@ def plot_valuation_dashboard(
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     return fig
+
+
+# =============================================================================
+# FIGURE: SCORE HEATMAP (Holdings × Metrics)
+# =============================================================================
+
+def plot_score_heatmap(
+    clean_data: dict,
+    verdicts: dict,
+    holdings_df,
+) -> plt.Figure:
+    """
+    Holdings × Metrics score heatmap.
+    Each cell shows 1–10 metric score (RdYlGn). Grey = not applicable.
+    """
+    metrics = ["PE", "PB", "EV/EBITDA", "ROCE%", "ROE%", "Rev CAGR%", "PAT CAGR%",
+               "EBITDAm%", "D/E", "ND/EBITDA", "FCF"]
+    companies, scores_mat = [], []
+
+    for _, row in holdings_df.iterrows():
+        ticker = row["Ticker"]
+        d = clean_data.get(ticker) or {}
+        v = verdicts.get(ticker) or {}
+        btype = d.get("btype", "UNKNOWN")
+        companies.append(row["Company"][:20])
+
+        breakdown = {name: score for name, score, _ in v.get("breakdown", [])}
+        # Normalize each breakdown score to 1–10 scale
+        def _norm(val, max_pts):
+            return round(val / max_pts * 10, 1) if max_pts > 0 else None
+
+        row_scores = []
+        pe_v  = d.get("pe")
+        pb_v  = d.get("pb")
+        ev_v  = d.get("ev_ebitda")
+        roce  = d.get("roce")
+        roe   = d.get("roe")
+        rc    = d.get("rev_cagr_3y")
+        pc    = d.get("pat_cagr_3y")
+        em    = d.get("ebitda_margin")
+        de    = d.get("de_ratio")
+        nd_e  = d.get("nd_ebitda")
+        fcf   = d.get("fcf")
+
+        def _score_metric(val, lo, hi, inverted=False):
+            if val is None: return None
+            norm = (val - lo) / (hi - lo) if hi > lo else 0.5
+            norm = max(0, min(1, norm))
+            return round((1 - norm if inverted else norm) * 9 + 1, 1)
+
+        row_scores = [
+            _score_metric(pe_v,  5, 40, inverted=True),
+            _score_metric(pb_v,  0.3, 5, inverted=True),
+            _score_metric(ev_v,  4, 20, inverted=True) if btype not in IS_FINANCIAL else None,
+            _score_metric(roce, 5, 35) if btype not in IS_FINANCIAL else None,
+            _score_metric(roe,  5, 25),
+            _score_metric(rc,   0, 30),
+            _score_metric(pc,   0, 40),
+            _score_metric(em,   5, 40) if btype not in IS_FINANCIAL else None,
+            _score_metric(de,   0, 3, inverted=True) if btype not in IS_FINANCIAL else None,
+            _score_metric(nd_e, -2, 5, inverted=True) if btype not in IS_FINANCIAL else None,
+            (10.0 if fcf and fcf > 0 else 3.0) if fcf is not None else None,
+        ]
+        scores_mat.append(row_scores)
+
+    n_hold = len(companies)
+    n_met  = len(metrics)
+    fig, ax = plt.subplots(figsize=(min(18, n_met * 1.5), max(6, n_hold * 0.55)), facecolor=C["bg"])
+    fig.suptitle("Score Heatmap — Holdings × Metrics (1=Worst, 10=Best)", fontsize=10, fontweight="bold", color=C["text"])
+
+    import matplotlib.colors as mcolors
+    cmap = plt.cm.RdYlGn
+
+    mat_display = np.full((n_hold, n_met), np.nan)
+    for i, row_s in enumerate(scores_mat):
+        for j, val in enumerate(row_s):
+            if val is not None:
+                mat_display[i, j] = val
+
+    masked = np.ma.masked_invalid(mat_display)
+    im = ax.imshow(masked, cmap=cmap, vmin=1, vmax=10, aspect="auto")
+    ax.set_xticks(range(n_met))
+    ax.set_yticks(range(n_hold))
+    ax.set_xticklabels(metrics, fontsize=8, rotation=35, ha="right")
+    ax.set_yticklabels(companies, fontsize=8)
+
+    # Cell annotations
+    for i in range(n_hold):
+        for j in range(n_met):
+            val = mat_display[i, j]
+            if not np.isnan(val):
+                txt_col = "black" if 3 < val < 8 else "white"
+                ax.text(j, i, f"{val:.0f}", ha="center", va="center", fontsize=7.5, color=txt_col)
+            else:
+                ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1, color=C["panel"], zorder=2))
+                ax.text(j, i, "—", ha="center", va="center", fontsize=7, color=C["text3"])
+
+    plt.colorbar(im, ax=ax, shrink=0.6, label="Score (1=cheap/good → 10=expensive/weak)")
+    plt.tight_layout()
+    return fig
+
+
+# =============================================================================
+# FIGURE: PREMIUM / DISCOUNT VS PEER MEDIAN
+# =============================================================================
+
+def plot_premium_discount(
+    clean_data: dict,
+    verdicts: dict,
+    holdings_df,
+) -> plt.Figure:
+    """
+    Grouped bar chart: PE / PB / EV_EBITDA premium or discount vs peer median.
+    Green shading = cheaper than peers. Red = more expensive.
+    """
+    rows = []
+    for _, row in holdings_df.iterrows():
+        ticker = row["Ticker"]
+        d = clean_data.get(ticker) or {}
+        v = verdicts.get(ticker) or {}
+        pm = v.get("peer_med", {}) or {}
+        btype = d.get("btype", "UNKNOWN")
+        if btype == "ETF": continue
+
+        def _disc(metric, peer_key):
+            val  = d.get(metric)
+            peer = pm.get(peer_key)
+            if val and peer and peer > 0:
+                return round((val - peer) / peer * 100, 1)
+            return None
+
+        rows.append({
+            "Company":  row["Company"][:18],
+            "PE disc":  _disc("pe",       "pe"),
+            "PB disc":  _disc("pb",       "pb"),
+            "EV disc":  _disc("ev_ebitda","ev_ebitda"),
+            "ROE diff": (d.get("roe") or 0) - (pm.get("roe") or 0) if d.get("roe") and pm.get("roe") else None,
+        })
+
+    if not rows:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.text(0.5, 0.5, "No peer data available", transform=ax.transAxes, ha="center", color=C["text3"])
+        return fig
+
+    df = pd.DataFrame(rows).set_index("Company")
+    fig, axes = plt.subplots(1, 3, figsize=(18, max(5, len(df) * 0.45 + 2)), facecolor=C["bg"])
+    fig.suptitle("Premium / Discount vs Peer Median (%)", fontsize=10, fontweight="bold", color=C["text"])
+
+    for ax, col, label in zip(axes, ["PE disc", "PB disc", "EV disc"], ["PE", "P/B", "EV/EBITDA"]):
+        ax.set_facecolor(C["panel"])
+        vals = df[col].dropna()
+        if vals.empty:
+            ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center")
+            continue
+        colors = [C["green"] if v <= 0 else C["red"] for v in vals]
+        ax.barh(vals.index, vals.values, color=colors, alpha=0.85, zorder=3)
+        ax.axvline(0, color=C["text"], lw=0.8)
+        ax.xaxis.grid(True, color=C["grid"], lw=0.5, zorder=0)
+        ax.yaxis.grid(False)
+        ax.set_title(f"{label} Premium/Discount", fontsize=9, color=C["text"])
+        ax.set_xlabel("% vs peer median (negative = cheaper)", fontsize=7.5)
+        ax.tick_params(labelsize=7.5)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+    return fig
+
+
+# =============================================================================
+# FIGURE: PER-HOLDING RADAR CHARTS (4 × 4 grid)
+# =============================================================================
+
+def plot_radar_charts(
+    clean_data: dict,
+    verdicts: dict,
+    holdings_df,
+) -> plt.Figure:
+    """
+    Per-holding polar radar chart showing 5 factor scores vs max (10).
+    """
+    CATS = ["Valuation", "Quality", "Growth", "B/Sheet", "Profitability"]
+    MAX_PTS = [30, 25, 20, 15, 10]
+    N = len(CATS)
+    angles = [n / N * 2 * np.pi for n in range(N)] + [0]
+
+    valid = []
+    for _, row in holdings_df.iterrows():
+        ticker = row["Ticker"]
+        v = verdicts.get(ticker) or {}
+        bd = v.get("breakdown", [])
+        if bd and len(bd) == 5:
+            valid.append((row["Company"][:18], ticker, v))
+
+    if not valid:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.text(0.5, 0.5, "Upload Screener files to see radar charts", transform=ax.transAxes,
+                ha="center", color=C["text3"])
+        return fig
+
+    cols = 4
+    rows = max(1, (len(valid) + cols - 1) // cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(18, rows * 4.2),
+                              subplot_kw={"projection": "polar"}, facecolor=C["bg"])
+    fig.suptitle("Per-Holding Valuation Radar (5 Factors)", fontsize=11, fontweight="bold", color=C["text"])
+
+    axes_flat = np.array(axes).flatten() if rows * cols > 1 else [axes]
+
+    for idx, (company, ticker, v) in enumerate(valid):
+        ax = axes_flat[idx]
+        ax.set_facecolor("#F8F9FC")
+        bd = v.get("breakdown", [])
+        scores = [s / m * 10 for _, s, m in bd]  # normalize to 0–10
+        vals   = scores + scores[:1]
+        ax.plot(angles, vals, "o-", lw=1.5, color=C["blue"])
+        ax.fill(angles, vals, alpha=0.25, color=C["blue"])
+        # Max possible
+        ax.plot(angles, [10] * (N + 1), "--", lw=0.5, color=C["text3"], alpha=0.4)
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(CATS, size=7.5)
+        ax.set_ylim(0, 10)
+        ax.set_yticks([2.5, 5, 7.5, 10])
+        ax.set_yticklabels([], size=0)
+        sc_str = f"{v.get('score'):.0f}" if v.get("score") else "N/A"
+        ax.set_title(f"{company}\n{v.get('label', '')} {sc_str}/100", size=7.5, pad=10, color=C["text"])
+
+    # Hide unused subplots
+    for idx in range(len(valid), len(axes_flat)):
+        axes_flat[idx].set_visible(False)
+
+    plt.tight_layout()
+    return fig
+
+
+# =============================================================================
+# PORTFOLIO INTELLIGENCE: MISALIGNMENT TABLE + STYLE DETECTION
+# =============================================================================
+
+def portfolio_misalignment_table(
+    clean_data: dict,
+    verdicts: dict,
+    holdings_df,
+) -> pd.DataFrame:
+    """
+    Identify stocks where weight rank and valuation score rank diverge most.
+    Large position in low-score stock = overweighted risk.
+    Small position in high-score stock = underweighted opportunity.
+    """
+    rows = []
+    for _, row in holdings_df.iterrows():
+        ticker = row["Ticker"]
+        v = verdicts.get(ticker) or {}
+        score = v.get("score")
+        wt = row["Portfolio Wt%"]
+        if score is None: continue
+        rows.append({"Company": row["Company"][:22], "ticker": ticker,
+                     "wt": wt, "score": score})
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    df["wt_rank"]    = df["wt"].rank(ascending=False).astype(int)
+    df["score_rank"] = df["score"].rank(ascending=False).astype(int)
+    df["rank_gap"]   = df["wt_rank"] - df["score_rank"]
+    df["misalign"]   = df["rank_gap"].abs()
+
+    df = df.sort_values("rank_gap")   # negative = overweighted vs conviction
+    df["Signal"] = df["rank_gap"].apply(
+        lambda x: "Overweighted vs conviction" if x < -3
+        else ("Underweighted opportunity" if x > 3 else "Aligned")
+    )
+    return df[["Company", "wt", "score", "wt_rank", "score_rank", "rank_gap", "Signal"]].rename(columns={
+        "wt": "Weight%", "score": "Score/100", "wt_rank": "Wt Rank",
+        "score_rank": "Score Rank", "rank_gap": "Rank Gap",
+    })
+
+
+def detect_portfolio_style(
+    clean_data: dict,
+    verdicts: dict,
+    holdings_df,
+) -> dict:
+    """
+    Detect portfolio style from factor thresholds per Req.md spec.
+    Returns: {style, quality_tier, strengths, risks, opportunities}
+    """
+    scores = [v["score"] for v in verdicts.values() if v and v.get("score") is not None]
+    avg_score = sum(scores) / len(scores) if scores else 50
+
+    # Factor exposure
+    total_wt = holdings_df["Portfolio Wt%"].sum() or 100
+    value_wt    = sum(row["Portfolio Wt%"] for _, row in holdings_df.iterrows()
+                      if (verdicts.get(row["Ticker"]) or {}).get("score", 0) >= 70)
+    quality_wt  = sum(row["Portfolio Wt%"] for _, row in holdings_df.iterrows()
+                      if (verdicts.get(row["Ticker"]) or {}).get("score", 0) >= 60)
+    bank_wt     = sum(row["Portfolio Wt%"] for _, row in holdings_df.iterrows()
+                      if (clean_data.get(row["Ticker"]) or {}).get("btype") in IS_FINANCIAL)
+
+    value_pct   = value_wt / total_wt * 100
+    quality_pct = quality_wt / total_wt * 100
+    bank_pct    = bank_wt / total_wt * 100
+
+    # Style detection per Req.md M5.4
+    if quality_pct > 60:    style = "Quality Focused"
+    elif value_pct > 40:    style = "Value Oriented"
+    elif bank_pct > 35:     style = "Financial Bias"
+    else:                   style = "Balanced"
+
+    # Quality tier
+    if avg_score >= 75:     quality_tier = "Institutional Grade"
+    elif avg_score >= 65:   quality_tier = "High Quality"
+    elif avg_score >= 50:   quality_tier = "Average Quality"
+    elif avg_score >= 35:   quality_tier = "Below Average"
+    else:                   quality_tier = "Weak Quality"
+
+    # Strengths / Risks / Opportunities (rule-based per Req.md M5.4)
+    strengths, risks, opportunities = [], [], []
+
+    if avg_score >= 60:
+        strengths.append(f"Portfolio avg score {avg_score:.0f}/100 — above-average valuation discipline")
+    if quality_pct > 40:
+        strengths.append(f"{quality_pct:.0f}% AUM in attractive/deep-value names")
+
+    if bank_pct > 40:
+        risks.append(f"High Financials concentration {bank_pct:.0f}% — credit cycle exposure")
+    if avg_score < 45:
+        risks.append("Portfolio skewed toward expensive names — limited margin of safety")
+
+    cheap_names = [
+        v.get("label") for v in verdicts.values()
+        if v and v.get("label") in ("DEEP VALUE", "ATTRACTIVE")
+    ]
+    if cheap_names:
+        opportunities.append(f"{len(cheap_names)} holdings rated Attractive/Deep Value — consider adding")
+
+    return {
+        "style":          style,
+        "quality_tier":   quality_tier,
+        "avg_score":      round(avg_score, 1),
+        "value_pct":      round(value_pct, 1),
+        "quality_pct":    round(quality_pct, 1),
+        "bank_pct":       round(bank_pct, 1),
+        "strengths":      strengths,
+        "risks":          risks,
+        "opportunities":  opportunities,
+    }

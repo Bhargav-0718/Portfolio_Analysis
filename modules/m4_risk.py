@@ -91,6 +91,114 @@ def calculate_risk_metrics(
     }
 
 
+def compute_return_based_metrics(
+    holdings: pd.DataFrame,
+    corr_returns: pd.DataFrame,
+    analysis_date: datetime,
+    risk_free_rate: float = 6.0,
+) -> dict:
+    """
+    Compute Beta, Sharpe Ratio, Sortino Ratio, Jensen Alpha, Max Drawdown.
+    Uses 2-year daily returns. risk_free_rate in % annually.
+    """
+    result = {
+        "beta": None, "sharpe": None, "sortino": None,
+        "jensen_alpha": None, "max_drawdown": None,
+        "annualised_vol": None, "portfolio_ann_return": None,
+    }
+
+    if corr_returns.empty or len(corr_returns.columns) < 2:
+        return result
+
+    try:
+        # Build weighted portfolio daily returns
+        weight_map = {
+            row["Company"][:15]: row["Portfolio Wt%"] / 100
+            for _, row in holdings.iterrows()
+        }
+        port_daily = pd.Series(0.0, index=corr_returns.index)
+        for col in corr_returns.columns:
+            wt = weight_map.get(col, 0)
+            port_daily = port_daily.add(corr_returns[col] * wt, fill_value=0)
+        port_daily = port_daily.dropna()
+
+        if len(port_daily) < 30:
+            return result
+
+        # Fetch benchmark returns for same period
+        start = (analysis_date - timedelta(days=365 * CORR_YEARS)).strftime("%Y-%m-%d")
+        end   = analysis_date.strftime("%Y-%m-%d")
+        bench_daily = pd.Series(dtype=float)
+        for bench in ["^CRSLDX", "^NSEI"]:
+            try:
+                bd = yf.download(bench, start=start, end=end, progress=False, auto_adjust=True)
+                if isinstance(bd.columns, pd.MultiIndex):
+                    bd.columns = bd.columns.get_level_values(0)
+                if not bd.empty and "Close" in bd.columns:
+                    bench_daily = bd["Close"].pct_change().dropna()
+                    break
+            except Exception:
+                pass
+
+        # Annualised stats
+        ann_factor   = 252
+        rf_daily     = risk_free_rate / 100 / ann_factor
+        port_ann_ret = float(port_daily.mean() * ann_factor * 100)
+        port_vol     = float(port_daily.std() * np.sqrt(ann_factor) * 100)
+
+        # Sharpe
+        excess_daily = port_daily - rf_daily
+        sharpe = float(excess_daily.mean() / port_daily.std() * np.sqrt(ann_factor)) if port_daily.std() > 0 else None
+
+        # Sortino (downside deviation only)
+        downside = port_daily[port_daily < rf_daily]
+        sortino = None
+        if len(downside) > 5 and downside.std() > 0:
+            sortino = float(excess_daily.mean() / downside.std() * np.sqrt(ann_factor))
+
+        # Beta vs benchmark
+        beta = None
+        jensen_alpha = None
+        bench_ann_ret = None
+        if not bench_daily.empty:
+            common_idx = port_daily.index.intersection(bench_daily.index)
+            if len(common_idx) > 30:
+                p = port_daily.loc[common_idx]
+                b = bench_daily.loc[common_idx]
+                cov = np.cov(p.values, b.values)
+                bench_var = cov[1, 1]
+                beta = round(cov[0, 1] / bench_var, 2) if bench_var > 0 else None
+                bench_ann_ret = float(b.mean() * ann_factor * 100)
+                if beta is not None:
+                    # Jensen Alpha = portfolio return - [Rf + Beta × (Bench - Rf)]
+                    capm_ret = risk_free_rate + beta * (bench_ann_ret - risk_free_rate)
+                    jensen_alpha = round(port_ann_ret - capm_ret, 2)
+
+        # Max Drawdown (1-year lookback)
+        one_year_ago = analysis_date - timedelta(days=365)
+        port_1y = port_daily[port_daily.index >= one_year_ago.strftime("%Y-%m-%d")]
+        max_dd = None
+        if len(port_1y) > 10:
+            cum = (1 + port_1y).cumprod()
+            roll_max = cum.cummax()
+            drawdown = (cum - roll_max) / roll_max * 100
+            max_dd = round(float(drawdown.min()), 2)
+
+        result = {
+            "beta":               round(beta, 2) if beta else None,
+            "sharpe":             round(sharpe, 2) if sharpe else None,
+            "sortino":            round(sortino, 2) if sortino else None,
+            "jensen_alpha":       jensen_alpha,
+            "max_drawdown":       max_dd,
+            "annualised_vol":     round(port_vol, 2) if port_vol else None,
+            "portfolio_ann_return": round(port_ann_ret, 2) if port_ann_ret else None,
+        }
+    except Exception:
+        pass
+
+    return result
+
+
 def generate_risk_flags(metrics: dict, sector_df: pd.DataFrame) -> list:
     """Generate human-readable risk flag list."""
     flags = []
@@ -121,10 +229,27 @@ def generate_risk_flags(metrics: dict, sector_df: pd.DataFrame) -> list:
     if metrics["active_share"] < 40:
         flags.append({"level": f"ℹ️  INFO: Low active share {metrics['active_share']:.0f}% — portfolio tracks benchmark closely", "color": "blue"})
 
+    if metrics["active_share"] > 90:
+        flags.append({"level": f"⚠️  HIGH: Very high active share {metrics['active_share']:.0f}% — extreme divergence from benchmark", "color": "red"})
+
     if not flags:
         flags.append({"level": "✅  No major risk flags detected", "color": "green"})
 
     return flags
+
+
+def get_risk_bucket(max_drawdown: float) -> str:
+    """Map 1-year max drawdown to risk bucket."""
+    if max_drawdown is None:
+        return "Unknown"
+    if max_drawdown > -5:
+        return "Low"
+    elif max_drawdown > -12:
+        return "Moderate"
+    elif max_drawdown > -20:
+        return "High"
+    else:
+        return "Very High"
 
 
 def fetch_correlation_data(

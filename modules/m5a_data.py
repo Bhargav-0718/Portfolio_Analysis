@@ -16,6 +16,19 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 IS_FINANCIAL = {"PSU_BANK", "SFB", "NBFC"}
 IS_ASSET_LIGHT = {"EXCHANGE_PLATFORM"}
 
+# =============================================================================
+# MANUAL BANK METRICS — yfinance doesn't provide NIM, GNPA, CASA
+# Source: latest annual reports / RBI data
+# =============================================================================
+MANUAL_BANK_METRICS = {
+    "PNB.NS":        {"gnpa_pct": 4.5,  "nim_pct": 3.0,  "casa_pct": 43.0},
+    "BANKINDIA.NS":  {"gnpa_pct": 5.4,  "nim_pct": 2.9,  "casa_pct": 40.0},
+    "IDFCFIRSTB.NS": {"gnpa_pct": 2.0,  "nim_pct": 6.0,  "casa_pct": 47.0},
+    "EQUITASBNK.NS": {"gnpa_pct": 2.8,  "nim_pct": 8.5,  "casa_pct": 32.0},
+    "JIOFIN.NS":     {"gnpa_pct": None, "nim_pct": None,  "casa_pct": None},
+    "BBG.NS":        {"gnpa_pct": None, "nim_pct": None,  "casa_pct": None},
+}
+
 # Business model configuration
 BUSINESS_MODEL = {
     "HINDCOPPER.NS": ("COMMODITY_METAL",    "Commodity Metal — Copper"),
@@ -378,6 +391,122 @@ def enrich_price(d: dict, ticker: str) -> dict:
     return d
 
 
+def fetch_fundamentals_yfinance(ticker: str, btype: str, bname: str) -> dict:
+    """
+    Auto-fetch fundamentals from yfinance.info when no Screener Excel is available.
+    Returns the same dict format as extract_fundamentals() so downstream is identical.
+    Quality: less accurate than Screener for Indian stocks, but works without uploads.
+    """
+    try:
+        info = yf.Ticker(ticker).info
+    except Exception:
+        info = {}
+
+    def _f(key, fallback=None):
+        val = info.get(key, fallback)
+        try:
+            return float(val) if val is not None else None
+        except Exception:
+            return None
+
+    revenue    = _f("totalRevenue")
+    ebitda     = _f("ebitda")
+    pat        = _f("netIncomeToCommon")
+    total_debt = _f("totalDebt") or 0
+    cash       = _f("totalCash") or 0
+    mcap       = _f("marketCap")
+    roe        = _f("returnOnEquity")
+    roa        = _f("returnOnAssets")
+    pe         = _f("trailingPE")
+    pb         = _f("priceToBook")
+    ev         = _f("enterpriseValue")
+    rev_growth = _f("revenueGrowth")
+    shares     = _f("sharesOutstanding")
+
+    # Derived
+    net_debt   = total_debt - cash
+    ev_ebitda  = round(ev / ebitda, 1) if (ev and ebitda and ebitda > 0 and btype not in IS_FINANCIAL) else None
+    ebitda_m   = round(ebitda / revenue * 100, 1) if (ebitda and revenue and revenue > 0 and btype not in IS_FINANCIAL) else None
+    pat_m      = round(pat / revenue * 100, 1) if (pat and revenue and revenue > 0) else None
+    roe_pct    = round(roe * 100, 1) if roe is not None else None
+    shares_cr  = round(shares / 1e7, 2) if shares else None
+    rev_cagr   = round(rev_growth * 100, 1) if rev_growth is not None else None
+
+    # Convert revenue from absolute to Cr (divide by 1e7 for Indian stocks reported in units)
+    # yfinance returns revenue in the currency unit (INR) — divide by 1e7 to get Crores
+    if revenue and revenue > 1e9:   # already in INR units
+        revenue_cr = round(revenue / 1e7, 2)
+    elif revenue:
+        revenue_cr = round(revenue, 2)  # already in Cr
+    else:
+        revenue_cr = None
+
+    if ebitda and ebitda > 1e9:
+        ebitda_cr = round(ebitda / 1e7, 2)
+    elif ebitda:
+        ebitda_cr = round(ebitda, 2)
+    else:
+        ebitda_cr = None
+
+    if pat and abs(pat) > 1e9:
+        pat_cr = round(pat / 1e7, 2)
+    elif pat:
+        pat_cr = round(pat, 2)
+    else:
+        pat_cr = None
+
+    if mcap and mcap > 1e9:
+        mcap_cr = round(mcap / 1e7, 2)
+    else:
+        mcap_cr = mcap
+
+    # Bank-specific manual metrics
+    bank_metrics = MANUAL_BANK_METRICS.get(ticker, {})
+
+    # Confidence: lower since yfinance data quality is variable for Indian stocks
+    confidence = 60 if (revenue_cr and pat_cr) else 35
+
+    result = {
+        "ticker": ticker, "btype": btype, "bname": bname,
+        "confidence": confidence,
+        "data_source": "yfinance",
+        "accounting_flags": ["Data from yfinance.info — upload Screener Excel for higher accuracy"],
+        "data_issues": [],
+        # P&L
+        "revenue": revenue_cr, "rev_base": revenue_cr or 1,
+        "ebitda": ebitda_cr, "ebitda_margin": ebitda_m,
+        "pat": pat_cr, "pat_margin": pat_m,
+        "interest": None, "depreciation": None, "other_income": None,
+        "pbt": None, "op_profit": None,
+        # Balance Sheet
+        "total_equity": None, "borrowings": round(total_debt / 1e7, 2) if total_debt > 1e6 else total_debt,
+        "cash": round(cash / 1e7, 2) if cash > 1e6 else cash,
+        "net_debt": round(net_debt / 1e7, 2) if abs(net_debt) > 1e6 else net_debt,
+        "total_assets": None, "net_block": None, "cwip": None,
+        # Cash Flow
+        "cfo": None, "capex": None, "fcf": None,
+        # Returns
+        "roce": None, "roe": roe_pct,
+        "de_ratio": None, "nd_ebitda": None,
+        # Growth
+        "rev_cagr_3y": rev_cagr, "pat_cagr_3y": None,
+        # Per-share
+        "shares_cr": shares_cr, "bvps": None,
+        # Market
+        "mcap_screener": mcap_cr, "price_screener": _f("currentPrice") or _f("previousClose"),
+        # Live (filled by enrich_price)
+        "live_price": None, "live_mcap": None,
+        "pe": round(pe, 1) if pe and 0 < pe < 500 else None,
+        "pb": round(pb, 2) if pb and 0 < pb < 100 else None,
+        "ev_ebitda": ev_ebitda, "ev": round(ev / 1e7, 2) if ev and ev > 1e6 else ev,
+        # Bank-specific
+        "gnpa_pct":  bank_metrics.get("gnpa_pct"),
+        "nim_pct":   bank_metrics.get("nim_pct"),
+        "casa_pct":  bank_metrics.get("casa_pct"),
+    }
+    return result
+
+
 def run_data_layer(
     holdings_df,
     screener_files: dict,
@@ -396,18 +525,32 @@ def run_data_layer(
         company = row["Company"].iloc[0][:28] if not row.empty else ticker
 
         if fpath is None:
-            # ETF or missing file — skip fundamental analysis
-            clean_data[ticker] = {
-                "ticker": ticker, "btype": btype, "confidence": 100,
-                "accounting_flags": [], "data_issues": [],
-                "live_price": None, "live_mcap": None,
-                "pe": None, "pb": None, "ev_ebitda": None,
-                "revenue": None, "ebitda": None, "pat": None,
-                "bname": bname,
-            }
-            if progress_callback:
-                progress_callback(ticker, company, "skipped")
-            continue
+            if btype == "ETF":
+                # ETFs have no fundamentals — skip entirely
+                clean_data[ticker] = {
+                    "ticker": ticker, "btype": btype, "confidence": 100,
+                    "accounting_flags": [], "data_issues": [],
+                    "live_price": None, "live_mcap": None,
+                    "pe": None, "pb": None, "ev_ebitda": None,
+                    "revenue": None, "ebitda": None, "pat": None,
+                    "bname": bname, "data_source": "none",
+                    "gnpa_pct": None, "nim_pct": None, "casa_pct": None,
+                }
+                if progress_callback:
+                    progress_callback(ticker, company, "ETF — skipped")
+                continue
+            else:
+                # No Screener file — auto-fetch from yfinance.info as fallback
+                if progress_callback:
+                    progress_callback(ticker, company, "fetching via yfinance...")
+                d = fetch_fundamentals_yfinance(ticker, btype, bname)
+                d = enrich_price(d, ticker)
+                clean_data[ticker] = d
+                if progress_callback:
+                    src = "yfinance"
+                    pe_str = f"PE:{d['pe']}" if d.get("pe") else ""
+                    progress_callback(ticker, company, f"ok [{src}] {pe_str}")
+                continue
 
         d = extract_fundamentals(ticker, fpath, btype)
 

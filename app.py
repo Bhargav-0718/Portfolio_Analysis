@@ -25,12 +25,14 @@ _ENV_API_KEY       = os.environ.get("OPENAI_API_KEY", "")
 _ENV_PORTFOLIO_NAME = os.environ.get("PORTFOLIO_NAME", "Portfolio Intelligence Report")
 
 # ── Core modules ──────────────────────────────────────────────────────────────
-from modules.m1_loader     import load_portfolio, fetch_prices, calculate_metrics, portfolio_summary
+from modules.m1_loader     import load_portfolio, fetch_prices, calculate_metrics, portfolio_summary, compute_max_drawdown
 from modules.m2_sector     import aggregate_sectors, plot_sector_overview, plot_cumulative_performance
 from modules.m3_attribution import fetch_sector_benchmark_returns, bhb_attribution, plot_attribution_charts
-from modules.m4_risk       import calculate_risk_metrics, generate_risk_flags, fetch_correlation_data, plot_risk_dashboard
+from modules.m4_risk       import calculate_risk_metrics, generate_risk_flags, fetch_correlation_data, plot_risk_dashboard, compute_return_based_metrics, get_risk_bucket
 from modules.m5a_data      import run_data_layer, BUSINESS_MODEL
-from modules.m5b_intelligence import run_intelligence_layer, plot_valuation_dashboard
+from modules.m5b_intelligence import (run_intelligence_layer, plot_valuation_dashboard,
+    plot_score_heatmap, plot_premium_discount, plot_radar_charts,
+    portfolio_misalignment_table, detect_portfolio_style)
 from modules.m5c_scenario  import run_scenario_engine
 from modules.m5d_action    import run_action_engine, portfolio_action_summary
 from modules.m5e_context   import build_context_json
@@ -75,6 +77,8 @@ for key in [
     "scenarios", "actions", "context_json", "research_data",
     "institutional_report", "analysis_date",
     "figs_overview", "figs_sector", "figs_attribution", "figs_risk", "figs_valuation",
+    "fig_heatmap", "fig_radar", "fig_premium",
+    "return_metrics", "portfolio_style", "misalignment_df",
     "price_history_data",
 ]:
     if key not in st.session_state:
@@ -204,6 +208,12 @@ if run_btn and portfolio_file:
             st.write(f"{icon} {company[:28]}: ₹{price:.2f}  [{status}]")
         holdings = calculate_metrics(holdings, prices)
         stats    = portfolio_summary(holdings)
+        # 1-year max drawdown + risk bucket (runs in background)
+        with st.spinner("Computing 1-year max drawdown..."):
+            max_dd, risk_bucket = compute_max_drawdown(holdings, analysis_date)
+        stats["max_drawdown"] = max_dd
+        stats["risk_bucket"]  = risk_bucket
+        st.write(f"  Max drawdown (1yr): {max_dd:.1f}%  →  Risk: {risk_bucket}" if max_dd else "  Max drawdown: N/A")
         st.session_state.update({"holdings": holdings, "portfolio_stats": stats, "analysis_date": analysis_date})
         s1.update(label="Module 1 ✅ — Portfolio loaded", state="complete")
 
@@ -237,12 +247,21 @@ if run_btn and portfolio_file:
     with st.status("Module 4 — Risk analytics...", expanded=False) as s4:
         risk_metrics = calculate_risk_metrics(holdings, sector_df)
         risk_flags   = generate_risk_flags(risk_metrics, sector_df)
-        with st.spinner("Fetching price history for correlation..."):
+        with st.spinner("Fetching price history for correlation + risk ratios..."):
             corr_returns = fetch_correlation_data(holdings, analysis_date)
+            return_metrics = compute_return_based_metrics(holdings, corr_returns, analysis_date)
+        # Merge return-based metrics into risk_metrics
+        risk_metrics.update({k: v for k, v in return_metrics.items() if v is not None})
+        if return_metrics.get("max_drawdown"):
+            risk_metrics["risk_bucket"] = get_risk_bucket(return_metrics["max_drawdown"])
         fig_risk = plot_risk_dashboard(holdings, sector_df, risk_metrics, corr_returns, report_date)
         st.session_state.update({
-            "risk_metrics": risk_metrics, "risk_flags": risk_flags, "figs_risk": fig_risk,
+            "risk_metrics": risk_metrics, "risk_flags": risk_flags,
+            "figs_risk": fig_risk, "return_metrics": return_metrics,
         })
+        beta = return_metrics.get("beta", "N/A")
+        sharpe = return_metrics.get("sharpe", "N/A")
+        st.write(f"  Beta: {beta}  |  Sharpe: {sharpe}")
         s4.update(label="Module 4 ✅ — Risk analytics complete", state="complete")
 
     # M5 — Valuation
@@ -264,9 +283,18 @@ if run_btn and portfolio_file:
         clean_data = run_data_layer(holdings, all_screener_files, sp_cb)
         verdicts   = run_intelligence_layer(clean_data)
         fig_val    = plot_valuation_dashboard(clean_data, verdicts, holdings, report_date)
+        # New visualizations + intelligence
+        fig_heatmap  = plot_score_heatmap(clean_data, verdicts, holdings)
+        fig_radar    = plot_radar_charts(clean_data, verdicts, holdings)
+        fig_premium  = plot_premium_discount(clean_data, verdicts, holdings)
+        misalign_df  = portfolio_misalignment_table(clean_data, verdicts, holdings)
+        port_style   = detect_portfolio_style(clean_data, verdicts, holdings)
         st.session_state.update({
             "clean_data": clean_data, "verdicts": verdicts, "figs_valuation": fig_val,
+            "fig_heatmap": fig_heatmap, "fig_radar": fig_radar, "fig_premium": fig_premium,
+            "misalignment_df": misalign_df, "portfolio_style": port_style,
         })
+        st.write(f"  Style: {port_style.get('style', '—')} | Quality: {port_style.get('quality_tier', '—')}")
         s5.update(label="Module 5 ✅ — Valuation complete", state="complete")
 
     # M5C — Scenario Engine
@@ -277,13 +305,16 @@ if run_btn and portfolio_file:
 
     # M5D — Action Engine
     with st.status("Module 5D — Action engine...", expanded=False) as s5d:
-        actions = run_action_engine(verdicts, scenarios, holdings)
+        actions = run_action_engine(verdicts, scenarios, holdings, clean_data)
         st.session_state["actions"] = actions
         action_sum = portfolio_action_summary(actions, holdings)
-        counts = action_sum.get("signal_counts", {})
-        st.write(f"  ACCUMULATE: {counts.get('ACCUMULATE',0)} | HOLD: {counts.get('HOLD',0)} | "
-                 f"TRIM: {counts.get('TRIM',0)} | EXIT: {counts.get('EXIT',0)}")
-        s5d.update(label="Module 5D ✅ — Action signals generated", state="complete")
+        counts  = action_sum.get("signal_counts", {})
+        regime  = action_sum.get("regime", "—")
+        st.write(f"  Regime: {regime}")
+        st.write(f"  STRONG_INCREASE: {counts.get('STRONG_INCREASE',0)} | "
+                 f"INCREASE: {counts.get('INCREASE',0)} | HOLD: {counts.get('HOLD',0)} | "
+                 f"REDUCE: {counts.get('REDUCE',0)} | STRONG_REDUCE: {counts.get('STRONG_REDUCE',0)}")
+        s5d.update(label=f"Module 5D ✅ — {regime}", state="complete")
 
     # M5E — Context Consolidation
     with st.status("Module 5E — Context consolidation (M6.1)...", expanded=False) as s5e:
@@ -314,9 +345,15 @@ if st.session_state["holdings"] is not None:
     context_json  = st.session_state["context_json"]
     attr_summary  = st.session_state["attribution_summary"]
     attrib_df     = st.session_state["attrib_df"]
-    inst_report   = st.session_state["institutional_report"] or {}
-    analysis_date = st.session_state["analysis_date"]
-    report_date   = analysis_date.strftime("%d %b %Y") if analysis_date else "—"
+    inst_report    = st.session_state["institutional_report"] or {}
+    analysis_date  = st.session_state["analysis_date"]
+    report_date    = analysis_date.strftime("%d %b %Y") if analysis_date else "—"
+    return_metrics = st.session_state.get("return_metrics") or {}
+    port_style     = st.session_state.get("portfolio_style") or {}
+    misalign_df    = st.session_state.get("misalignment_df")
+    fig_heatmap    = st.session_state.get("fig_heatmap")
+    fig_radar      = st.session_state.get("fig_radar")
+    fig_premium    = st.session_state.get("fig_premium")
 
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "📊 Overview",
@@ -339,7 +376,11 @@ if st.session_state["holdings"] is not None:
         c2.metric("Current Value", f"₹{stats['total_current']:,.0f}")
         c3.metric("Unrealised P&L",f"₹{stats['total_pnl']:+,.0f}", delta=f"{stats['total_return']:+.2f}%")
         c4.metric("Winners / Losers", f"{stats['num_winners']} / {stats['num_losers']}")
-        c5.metric("Active Share",  f"{(risk_metrics or {}).get('active_share', 0):.1f}%")
+        max_dd = stats.get("max_drawdown")
+        bucket = stats.get("risk_bucket", "—")
+        c5.metric("Max Drawdown (1yr)",
+                  f"{max_dd:.1f}%" if max_dd else "N/A",
+                  delta=f"Risk: {bucket}", delta_color="inverse")
 
         st.markdown("---")
         c1, c2, c3 = st.columns(3)
@@ -438,16 +479,28 @@ if st.session_state["holdings"] is not None:
         st.markdown('<div class="section-header">Portfolio Risk Analytics</div>', unsafe_allow_html=True)
         if risk_metrics:
             c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Active Share",     f"{risk_metrics['active_share']:.1f}%")
-            c2.metric("HHI",              f"{risk_metrics['hhi']:.0f}")
-            c3.metric("Effective N",      f"{risk_metrics['effective_n']:.1f}")
-            c4.metric("Hit Rate",         f"{risk_metrics['hit_rate']:.1f}%")
-            c5.metric("Win/Loss",         f"{risk_metrics['win_loss_ratio']:.2f}x")
+            c1.metric("Active Share",   f"{risk_metrics['active_share']:.1f}%")
+            c2.metric("HHI",            f"{risk_metrics['hhi']:.0f}")
+            c3.metric("Effective N",    f"{risk_metrics['effective_n']:.1f}")
+            c4.metric("Hit Rate",       f"{risk_metrics['hit_rate']:.1f}%")
+            c5.metric("Win/Loss",       f"{risk_metrics['win_loss_ratio']:.2f}x")
             st.markdown("---")
             c1, c2, c3 = st.columns(3)
             c1.metric("Top 1 Wt",  f"{risk_metrics['top1_wt']:.1f}%")
             c2.metric("Top 5 Wt",  f"{risk_metrics['top5_wt']:.1f}%")
             c3.metric("Top 10 Wt", f"{risk_metrics['top10_wt']:.1f}%")
+            st.markdown("---")
+            # Return-based risk metrics (Beta, Sharpe, Sortino, Jensen Alpha, Max Drawdown)
+            st.markdown("#### Return-Based Risk Metrics")
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Beta",          f"{return_metrics.get('beta') or 'N/A'}")
+            c2.metric("Sharpe Ratio",  f"{return_metrics.get('sharpe') or 'N/A'}")
+            c3.metric("Sortino Ratio", f"{return_metrics.get('sortino') or 'N/A'}")
+            c4.metric("Jensen Alpha",  f"{return_metrics.get('jensen_alpha') or 'N/A'}%")
+            max_dd = return_metrics.get("max_drawdown") or stats.get("max_drawdown")
+            bucket = risk_metrics.get("risk_bucket") or stats.get("risk_bucket", "Unknown")
+            c5.metric("Max Drawdown (1yr)", f"{max_dd:.1f}%" if max_dd else "N/A",
+                      delta=f"Risk: {bucket}", delta_color="inverse")
             st.markdown("---")
             st.markdown("#### Risk Flags")
             for flag in (risk_flags or []):
@@ -537,6 +590,53 @@ if st.session_state["holdings"] is not None:
         if st.session_state["figs_valuation"]:
             st.markdown("---")
             st.pyplot(st.session_state["figs_valuation"], width="stretch")
+
+        # ── Portfolio Style + Intelligence ────────────────────────────────────
+        if port_style:
+            st.markdown("---")
+            st.markdown("#### Portfolio Intelligence")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Portfolio Style", port_style.get("style", "—"))
+            c2.metric("Quality Tier",    port_style.get("quality_tier", "—"))
+            c3.metric("Avg Score",       f"{port_style.get('avg_score', 0):.1f}/100")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.markdown("**Strengths**")
+                for s in port_style.get("strengths", []): st.write(f"✅ {s}")
+            with col2:
+                st.markdown("**Risks**")
+                for r in port_style.get("risks", []): st.write(f"⚠️ {r}")
+            with col3:
+                st.markdown("**Opportunities**")
+                for o in port_style.get("opportunities", []): st.write(f"💡 {o}")
+
+        # ── Misalignment Table ────────────────────────────────────────────────
+        if misalign_df is not None and not misalign_df.empty:
+            st.markdown("---")
+            st.markdown("#### Portfolio Misalignment (Weight Rank vs Score Rank)")
+            st.caption("Negative rank gap = overweighted vs conviction. Positive = underweighted opportunity.")
+            st.dataframe(misalign_df.style.format({
+                "Weight%": "{:.1f}", "Score/100": "{:.0f}",
+                "Rank Gap": "{:+d}",
+            }, na_rep="—"), width="stretch")
+
+        # ── Score Heatmap ─────────────────────────────────────────────────────
+        if fig_heatmap:
+            st.markdown("---")
+            st.markdown("#### Score Heatmap — Holdings × Metrics")
+            st.pyplot(fig_heatmap, width="stretch")
+
+        # ── Radar Charts ──────────────────────────────────────────────────────
+        if fig_radar:
+            st.markdown("---")
+            st.markdown("#### Per-Holding Valuation Radar Charts")
+            st.pyplot(fig_radar, width="stretch")
+
+        # ── Premium/Discount ──────────────────────────────────────────────────
+        if fig_premium:
+            st.markdown("---")
+            st.markdown("#### Premium / Discount vs Peer Median")
+            st.pyplot(fig_premium, width="stretch")
 
     # =========================================================================
     # TAB 6 — SCENARIOS & ACTIONS
