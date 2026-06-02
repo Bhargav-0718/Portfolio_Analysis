@@ -25,10 +25,26 @@ _ENV_API_KEY       = os.environ.get("OPENAI_API_KEY", "")
 _ENV_PORTFOLIO_NAME = os.environ.get("PORTFOLIO_NAME", "Portfolio Intelligence Report")
 
 # ── Core modules ──────────────────────────────────────────────────────────────
-from modules.m1_loader     import load_portfolio, fetch_prices, calculate_metrics, portfolio_summary, compute_max_drawdown
+from modules.m1_loader     import load_portfolio, fetch_prices, calculate_metrics, portfolio_summary
 from modules.m2_sector     import aggregate_sectors, plot_sector_overview, plot_cumulative_performance
 from modules.m3_attribution import fetch_sector_benchmark_returns, bhb_attribution, plot_attribution_charts
-from modules.m4_risk       import calculate_risk_metrics, generate_risk_flags, fetch_correlation_data, plot_risk_dashboard, compute_return_based_metrics, get_risk_bucket
+from modules.m4_risk       import calculate_risk_metrics, generate_risk_flags, fetch_correlation_data, plot_risk_dashboard
+
+# New functions added in the gap-filling build — graceful fallback if cache is stale
+try:
+    from modules.m1_loader import compute_max_drawdown
+except ImportError:
+    def compute_max_drawdown(*_a, **_k):
+        return None, "Unknown"
+
+try:
+    from modules.m4_risk import compute_return_based_metrics, get_risk_bucket
+except ImportError:
+    def compute_return_based_metrics(*_a, **_k):
+        return {"beta": None, "sharpe": None, "sortino": None, "jensen_alpha": None,
+                "max_drawdown": None, "annualised_vol": None, "portfolio_ann_return": None}
+    def get_risk_bucket(*_a, **_k):
+        return "Unknown"
 from modules.m5a_data      import run_data_layer, BUSINESS_MODEL
 from modules.m5b_intelligence import (run_intelligence_layer, plot_valuation_dashboard,
     plot_score_heatmap, plot_premium_discount, plot_radar_charts,
