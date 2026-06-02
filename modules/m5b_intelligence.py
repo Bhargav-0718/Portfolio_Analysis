@@ -701,9 +701,9 @@ def detect_portfolio_style(
     # Factor exposure
     total_wt = holdings_df["Portfolio Wt%"].sum() or 100
     value_wt    = sum(row["Portfolio Wt%"] for _, row in holdings_df.iterrows()
-                      if (verdicts.get(row["Ticker"]) or {}).get("score", 0) >= 70)
+                      if ((verdicts.get(row["Ticker"]) or {}).get("score") or 0) >= 70)
     quality_wt  = sum(row["Portfolio Wt%"] for _, row in holdings_df.iterrows()
-                      if (verdicts.get(row["Ticker"]) or {}).get("score", 0) >= 60)
+                      if ((verdicts.get(row["Ticker"]) or {}).get("score") or 0) >= 60)
     bank_wt     = sum(row["Portfolio Wt%"] for _, row in holdings_df.iterrows()
                       if (clean_data.get(row["Ticker"]) or {}).get("btype") in IS_FINANCIAL)
 
