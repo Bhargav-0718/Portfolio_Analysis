@@ -158,17 +158,20 @@ def plot_attribution_charts(
     report_date: str,
 ) -> plt.Figure:
     """
-    Figure 4+5+6: Attribution waterfall, decomposition, stock contributors.
+    3-panel attribution figure matching notebook output:
+    Fig 4: Total alpha by sector (waterfall horizontal)
+    Fig 5: Attribution Decomposition — Allocation vs Selection vs Interaction (horizontal grouped)
+    Fig 6: Stock-level contributors / detractors (horizontal)
     """
-    fig = plt.figure(figsize=(18, 14), facecolor=C["bg"])
+    fig = plt.figure(figsize=(18, 20), facecolor=C["bg"])
     fig.suptitle(
         f"Brinson-Hood-Beebower Attribution  |  {report_date}",
         fontsize=13, fontweight="bold", color=C["text"], y=0.99,
     )
-    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.5, wspace=0.35)
-    ax1 = fig.add_subplot(gs[0, 0])   # Waterfall
-    ax2 = fig.add_subplot(gs[0, 1])   # Decomposition
-    ax3 = fig.add_subplot(gs[1, :])   # Stock contributors
+    gs = gridspec.GridSpec(3, 1, figure=fig, hspace=0.55)
+    ax1 = fig.add_subplot(gs[0])   # Fig 4 — Total alpha waterfall
+    ax2 = fig.add_subplot(gs[1])   # Fig 5 — Decomposition (Allocation + Selection + Interaction)
+    ax3 = fig.add_subplot(gs[2])   # Fig 6 — Stock contributors / detractors
 
     def style_ax(ax):
         ax.set_facecolor(C["panel"])
@@ -179,55 +182,88 @@ def plot_attribution_charts(
         ax.spines["bottom"].set_color(C["border"])
         ax.set_axisbelow(True)
 
-    # --- Panel 1: Total active return by sector ---
+    # ── Figure 4 — Total Attribution by Sector (waterfall) ────────────────────
     style_ax(ax1)
     if not attrib_df.empty:
-        df1 = attrib_df[attrib_df["Port_Wt%"] > 0].sort_values("Active_Return")
+        # All sectors sorted by Active_Return
+        df1 = attrib_df.sort_values("Active_Return")
         colors = [C["green"] if v >= 0 else C["red"] for v in df1["Active_Return"]]
-        ax1.barh(df1["Sector"].str[:18], df1["Active_Return"], color=colors, alpha=0.85, zorder=3)
+        bars = ax1.barh(df1["Sector"].str[:20], df1["Active_Return"], color=colors, alpha=0.85, zorder=3)
+        # Data labels
+        for bar, val in zip(bars, df1["Active_Return"]):
+            ax1.text(
+                val + (0.05 if val >= 0 else -0.05), bar.get_y() + bar.get_height() / 2,
+                f"{val:+.4f}%", va="center", ha="left" if val >= 0 else "right",
+                fontsize=7, color=C["text"],
+            )
         ax1.axvline(0, color=C["text"], lw=0.8)
         ax1.xaxis.grid(True, color=C["grid"], lw=0.5, zorder=0)
         ax1.yaxis.grid(False)
-        ax1.tick_params(axis="y", labelsize=7)
-        ax1.set_title("Total Active Return by Sector", fontsize=9, color=C["text"])
-        ax1.set_xlabel("Active Return (%)", fontsize=8)
-        # Summary box
-        tb = f"Allocation: {summary['allocation_effect']:+.2f}%\nSelection:  {summary['selection_effect']:+.2f}%\nTotal Alpha:{summary['total_alpha']:+.2f}%"
-        ax1.text(0.97, 0.05, tb, transform=ax1.transAxes, fontsize=7,
+        ax1.tick_params(axis="y", labelsize=8)
+        ax1.set_title(f"Total Attribution by Sector  |  {report_date}", fontsize=10, color=C["text"])
+        ax1.set_xlabel("Total Alpha (%)", fontsize=9)
+        # Summary inset
+        tb = (f"Portfolio Return: {summary['total_port_return']:+.2f}%\n"
+              f"Benchmark Return: {summary['total_bench_return']:+.2f}%\n"
+              f"Active Return:    {summary['total_alpha']:+.2f}%\n"
+              f"Allocation Effect: {summary['allocation_effect']:+.4f}%\n"
+              f"Selection Effect:  {summary['selection_effect']:+.4f}%")
+        ax1.text(0.98, 0.05, tb, transform=ax1.transAxes, fontsize=7.5,
                  ha="right", va="bottom", color=C["text"],
-                 bbox=dict(boxstyle="round,pad=0.4", facecolor=C["panel"], edgecolor=C["border"]))
+                 bbox=dict(boxstyle="round,pad=0.5", facecolor="white", edgecolor=C["border"], alpha=0.9))
+        # Legend patches
+        from matplotlib.patches import Patch
+        ax1.legend(handles=[Patch(color=C["green"], label="Positive Alpha"),
+                             Patch(color=C["red"],   label="Negative Alpha")],
+                   fontsize=8, loc="lower right")
 
-    # --- Panel 2: Allocation vs Selection per sector ---
+    # ── Figure 5 — Attribution Decomposition: Allocation vs Selection vs Interaction ──
     style_ax(ax2)
     if not attrib_df.empty:
-        df2 = attrib_df[attrib_df["Port_Wt%"] > 0]
-        x = np.arange(len(df2))
-        w = 0.35
-        ax2.bar(x - w / 2, df2["Allocation"], w, label="Allocation", color=C["blue"], alpha=0.8, zorder=3)
-        ax2.bar(x + w / 2, df2["Selection"], w, label="Selection", color=C["gold"], alpha=0.8, zorder=3)
-        ax2.set_xticks(x)
-        ax2.set_xticklabels(df2["Sector"].str[:12], rotation=40, ha="right", fontsize=7)
-        ax2.axhline(0, color=C["text"], lw=0.8)
-        ax2.yaxis.grid(True, color=C["grid"], lw=0.5, zorder=0)
-        ax2.legend(fontsize=8)
-        ax2.set_title("Allocation vs Selection Effect", fontsize=9, color=C["text"])
-        ax2.set_ylabel("Return Attribution (%)", fontsize=8)
+        # All sectors — sorted by allocation effect ascending (matches notebook)
+        df2 = attrib_df.sort_values("Allocation")
+        n   = len(df2)
+        y   = np.arange(n)
+        h   = 0.25  # bar height for each component
 
-    # --- Panel 3: Stock contributors ---
+        PURPLE = "#7C3AED"
+
+        ax2.barh(y + h,     df2["Allocation"],  h, label="Allocation Effect",  color=C["blue"],  alpha=0.85, zorder=3)
+        ax2.barh(y,         df2["Selection"],   h, label="Selection Effect",   color=C["gold"],  alpha=0.85, zorder=3)
+        ax2.barh(y - h,     df2["Interaction"], h, label="Interaction Effect", color=PURPLE,     alpha=0.85, zorder=3)
+
+        ax2.set_yticks(y)
+        ax2.set_yticklabels(df2["Sector"].str[:20], fontsize=8)
+        ax2.axvline(0, color=C["text"], lw=0.8)
+        ax2.xaxis.grid(True, color=C["grid"], lw=0.5, zorder=0)
+        ax2.yaxis.grid(False)
+        ax2.legend(fontsize=8, loc="lower right")
+        ax2.set_title(f"Attribution Decomposition: Allocation vs Selection  |  {report_date}", fontsize=10, color=C["text"])
+        ax2.set_xlabel("Attribution Effect (%)", fontsize=9)
+
+    # ── Figure 6 — Stock-Level Return Attribution ─────────────────────────────
     style_ax(ax3)
-    contribs = holdings[["Company", "Sector", "Portfolio Wt%", "Return %", "Contribution%"]].copy()
-    contribs = contribs.sort_values("Contribution%")
-    top = contribs.tail(5)
-    bot = contribs.head(5)
-    combined = pd.concat([bot, top]).drop_duplicates()
-    bar_colors = [C["green"] if v >= 0 else C["red"] for v in combined["Contribution%"]]
-    ax3.barh(combined["Company"].str[:28], combined["Contribution%"], color=bar_colors, alpha=0.85, zorder=3)
-    ax3.axvline(0, color=C["text"], lw=0.8)
-    ax3.xaxis.grid(True, color=C["grid"], lw=0.5, zorder=0)
-    ax3.yaxis.grid(False)
-    ax3.tick_params(axis="y", labelsize=7.5)
-    ax3.set_title("Top 5 Contributors / Detractors (by return contribution)", fontsize=9, color=C["text"])
-    ax3.set_xlabel("Contribution to Portfolio Return (%)", fontsize=8)
+    if "Contribution%" in holdings.columns:
+        contribs = holdings[["Company", "Portfolio Wt%", "Return %", "Contribution%"]].copy().dropna(subset=["Contribution%"])
+        contribs = contribs.sort_values("Contribution%")
 
-    plt.tight_layout(rect=[0, 0, 1, 0.97])
+        # Top 8 contributors + bottom 8 detractors (matching notebook)
+        top8 = contribs.tail(8)
+        bot8 = contribs.head(8)
+        combined = pd.concat([bot8, top8]).drop_duplicates()
+
+        bar_colors = [C["green"] if v >= 0 else C["red"] for v in combined["Contribution%"]]
+        bars = ax3.barh(
+            combined["Company"].str[:28] + "  (wt:" + combined["Portfolio Wt%"].map("{:.1f}%".format) +
+            "  ret:" + combined["Return %"].map("{:+.1f}%".format) + ")",
+            combined["Contribution%"], color=bar_colors, alpha=0.85, zorder=3,
+        )
+        ax3.axvline(0, color=C["text"], lw=0.8)
+        ax3.xaxis.grid(True, color=C["grid"], lw=0.5, zorder=0)
+        ax3.yaxis.grid(False)
+        ax3.tick_params(axis="y", labelsize=7.5)
+        ax3.set_title(f"Stock-Level Return Attribution  |  {report_date}", fontsize=10, color=C["text"])
+        ax3.set_xlabel("Contribution to Portfolio Return (%)", fontsize=9)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.98])
     return fig
