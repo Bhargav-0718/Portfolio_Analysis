@@ -91,7 +91,7 @@ for key in [
     "holdings", "portfolio_stats", "sector_df", "risk_metrics", "risk_flags",
     "attribution_summary", "attrib_df", "clean_data", "verdicts",
     "scenarios", "actions", "context_json", "research_data",
-    "institutional_report", "analysis_date",
+    "institutional_report", "analysis_date", "holdings_contrib",
     "figs_overview", "figs_sector", "figs_attribution", "figs_risk", "figs_valuation",
     "fig_heatmap", "fig_radar", "fig_premium",
     "return_metrics", "portfolio_style", "misalignment_df",
@@ -256,6 +256,7 @@ if run_btn and portfolio_file:
         st.session_state.update({
             "attrib_df": attrib_df, "attribution_summary": attr_summary,
             "figs_attribution": fig_attr,
+            "holdings_contrib": holdings_contrib,   # needed for contributor/detractor tables
         })
         s3.update(label="Module 3 ✅ — Attribution complete", state="complete")
 
@@ -361,8 +362,9 @@ if st.session_state["holdings"] is not None:
     context_json  = st.session_state["context_json"]
     attr_summary  = st.session_state["attribution_summary"]
     attrib_df     = st.session_state["attrib_df"]
-    inst_report    = st.session_state["institutional_report"] or {}
-    analysis_date  = st.session_state["analysis_date"]
+    inst_report      = st.session_state["institutional_report"] or {}
+    holdings_contrib = st.session_state.get("holdings_contrib")
+    analysis_date    = st.session_state["analysis_date"]
     report_date    = analysis_date.strftime("%d %b %Y") if analysis_date else "—"
     return_metrics = st.session_state.get("return_metrics") or {}
     port_style     = st.session_state.get("portfolio_style") or {}
@@ -463,6 +465,8 @@ if st.session_state["holdings"] is not None:
     # =========================================================================
     with tab3:
         st.markdown('<div class="section-header">Brinson-Hood-Beebower Attribution</div>', unsafe_allow_html=True)
+
+        # ── Return Summary ────────────────────────────────────────────────────
         if attr_summary:
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Portfolio Return",  f"{attr_summary['total_port_return']:+.2f}%")
@@ -470,20 +474,57 @@ if st.session_state["holdings"] is not None:
             c3.metric("Total Alpha",       f"{attr_summary['total_alpha']:+.2f}%")
             c4.metric("Hit Rate",          f"{(risk_metrics or {}).get('hit_rate', 0):.1f}%")
             st.markdown("---")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Allocation Effect",  f"{attr_summary['allocation_effect']:+.4f}%")
-            c2.metric("Selection Effect",   f"{attr_summary['selection_effect']:+.4f}%")
-            c3.metric("Interaction Effect", f"{attr_summary['interaction_effect']:+.4f}%")
+
+            # Attribution Decomposition
+            st.markdown("#### Attribution Decomposition")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Allocation Effect",  f"{attr_summary['allocation_effect']:+.4f}%",
+                      help="Sector timing skill — did you put money in the right sectors?")
+            c2.metric("Selection Effect",   f"{attr_summary['selection_effect']:+.4f}%",
+                      help="Stock picking skill — did you pick the right stocks within sectors?")
+            c3.metric("Interaction Effect", f"{attr_summary['interaction_effect']:+.4f}%",
+                      help="Combined bet — sizing × picking simultaneously")
+            c4.metric("Total Explained",    f"{attr_summary['total_explained']:+.4f}%")
             alloc, sel = attr_summary["allocation_effect"], attr_summary["selection_effect"]
             st.info(f"📌 Alpha driven by **{'sector allocation' if abs(alloc)>abs(sel) else 'stock selection'}** "
-                    f"({(alloc if abs(alloc)>abs(sel) else sel):+.4f}%)")
+                    f"({(alloc if abs(alloc)>abs(sel) else sel):+.4f}%). "
+                    f"Portfolio: {attr_summary['total_port_return']:+.2f}% | Benchmark: {attr_summary['total_bench_return']:+.2f}% | Active: {attr_summary['total_alpha']:+.2f}%")
+
+        # ── Sector-Level BHB Table ────────────────────────────────────────────
         if attrib_df is not None:
-            st.markdown("#### BHB Attribution Table")
-            st.dataframe(attrib_df.style.format({
-                "Port_Wt%": "{:.2f}%", "Bench_Wt%": "{:.2f}%",
-                "Active_Bet%": "{:+.2f}%", "Allocation": "{:+.4f}%",
-                "Selection": "{:+.4f}%", "Active_Return": "{:+.4f}%",
-            }), width="stretch")
+            st.markdown("#### Sector-Level Attribution (BHB)")
+            disp_cols = [c for c in ["Sector","Port_Wt%","Bench_Wt%","Active_Bet%",
+                                      "Port_Return%","Bench_Return%","Allocation","Selection","Interaction","Active_Return"]
+                         if c in attrib_df.columns]
+            st.dataframe(attrib_df[disp_cols].style.format({
+                "Port_Wt%": "{:.1f}%", "Bench_Wt%": "{:.1f}%", "Active_Bet%": "{:+.1f}%",
+                "Port_Return%": "{:+.1f}%", "Bench_Return%": "{:+.1f}%",
+                "Allocation": "{:+.4f}%", "Selection": "{:+.4f}%",
+                "Interaction": "{:+.4f}%", "Active_Return": "{:+.4f}%",
+            }, na_rep="—"), width="stretch")
+
+        # ── Top Contributors / Bottom Detractors ──────────────────────────────
+        if holdings_contrib is not None and "Contribution%" in holdings_contrib.columns:
+            st.markdown("---")
+            contrib = holdings_contrib[["Company","Sector","Portfolio Wt%","Return %","Contribution%"]].copy()
+            contrib = contrib.dropna(subset=["Contribution%"])
+
+            top5    = contrib.nlargest(5, "Contribution%")
+            bottom5 = contrib.nsmallest(5, "Contribution%")
+
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("#### Top 5 Contributors")
+                st.dataframe(top5.style.format({
+                    "Portfolio Wt%": "{:.1f}%", "Return %": "{:+.1f}%", "Contribution%": "{:+.4f}%"
+                }), width="stretch")
+            with c2:
+                st.markdown("#### Bottom 5 Detractors")
+                st.dataframe(bottom5.style.format({
+                    "Portfolio Wt%": "{:.1f}%", "Return %": "{:+.1f}%", "Contribution%": "{:+.4f}%"
+                }), width="stretch")
+
+        # ── Attribution Charts ────────────────────────────────────────────────
         if st.session_state["figs_attribution"]:
             st.markdown("---")
             st.pyplot(st.session_state["figs_attribution"], width="stretch")
@@ -493,30 +534,82 @@ if st.session_state["holdings"] is not None:
     # =========================================================================
     with tab4:
         st.markdown('<div class="section-header">Portfolio Risk Analytics</div>', unsafe_allow_html=True)
+
         if risk_metrics:
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Active Share",   f"{risk_metrics['active_share']:.1f}%")
-            c2.metric("HHI",            f"{risk_metrics['hhi']:.0f}")
-            c3.metric("Effective N",    f"{risk_metrics['effective_n']:.1f}")
-            c4.metric("Hit Rate",       f"{risk_metrics['hit_rate']:.1f}%")
-            c5.metric("Win/Loss",       f"{risk_metrics['win_loss_ratio']:.2f}x")
-            st.markdown("---")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Top 1 Wt",  f"{risk_metrics['top1_wt']:.1f}%")
-            c2.metric("Top 5 Wt",  f"{risk_metrics['top5_wt']:.1f}%")
-            c3.metric("Top 10 Wt", f"{risk_metrics['top10_wt']:.1f}%")
-            st.markdown("---")
-            # Return-based risk metrics (Beta, Sharpe, Sortino, Jensen Alpha, Max Drawdown)
-            st.markdown("#### Return-Based Risk Metrics")
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Beta",          f"{return_metrics.get('beta') or 'N/A'}")
-            c2.metric("Sharpe Ratio",  f"{return_metrics.get('sharpe') or 'N/A'}")
-            c3.metric("Sortino Ratio", f"{return_metrics.get('sortino') or 'N/A'}")
-            c4.metric("Jensen Alpha",  f"{return_metrics.get('jensen_alpha') or 'N/A'}%")
+            rm = risk_metrics
+            # ── Full risk metrics table (matches notebook output exactly) ─────
+            st.markdown("#### Risk Metrics")
+            risk_table = []
+
+            # Active Share
+            ash = rm.get("active_share", 0)
+            ash_lbl = "VERY HIGH ACTIVE" if ash > 80 else ("HIGHLY ACTIVE" if ash > 60 else ("MODERATELY ACTIVE" if ash > 40 else "LOW ACTIVE"))
+            risk_table.append(("Active Share vs Nifty 500", f"{ash:.1f}%", ash_lbl))
+
+            hhi = rm.get("hhi", 0)
+            hhi_lbl = "CONCENTRATED" if hhi > 2500 else ("MODERATE" if hhi > 1000 else "DIVERSIFIED")
+            risk_table.append(("HHI (Concentration Index)", f"{hhi:.0f}", hhi_lbl))
+
+            risk_table.append(("Effective Holdings", f"{rm.get('effective_n',0):.1f}", f"out of {len(holdings)} actual positions"))
+            risk_table.append(("Effective Sectors", f"{rm.get('effective_sectors',0):.1f}", f"out of {int(sector_df[sector_df['Port_Weight']>0]['Sector'].nunique()) if sector_df is not None else '?'} sectors held"))
+
+            t1 = rm.get("top1_wt", 0)
+            risk_table.append(("Top 1 Position Weight", f"{t1:.1f}%", "🔴 VERY HIGH" if t1>30 else ("🟡 HIGH" if t1>20 else "🟢 OK")))
+            t3 = rm.get("top3_wt", 0)
+            risk_table.append(("Top 3 Position Weight", f"{t3:.1f}%", "🔴 HIGH" if t3>55 else ("🟡 MODERATE" if t3>40 else "🟢 OK")))
+            t5 = rm.get("top5_wt", 0)
+            risk_table.append(("Top 5 Position Weight", f"{t5:.1f}%", "🔴 HIGH" if t5>70 else ("🟡 MODERATE" if t5>55 else "🟢 OK")))
+            risk_table.append(("Top 10 Position Weight", f"{rm.get('top10_wt',0):.1f}%", ""))
+            risk_table.append(("Largest Sector Weight", f"{rm.get('top_sector_wt',0):.1f}%", f"({rm.get('top_sector','—')})"))
+            risk_table.append(("Sector HHI", f"{rm.get('sector_hhi',0):.0f}", ""))
+            risk_table.append(("", "", ""))  # spacer
+
+            hr_val = rm.get("hit_rate", 0)
+            risk_table.append(("Hit Rate (% profitable)", f"{hr_val:.1f}%",
+                               f"{rm.get('num_winners',stats.get('num_winners','—'))}/{len(holdings)} positions winning"
+                               if hasattr(holdings,'__len__') else ""))
+            risk_table.append(("Average Winner Return", f"{rm.get('avg_win',0):.1f}%", ""))
+            risk_table.append(("Average Loser Return",  f"{rm.get('avg_loss',0):.1f}%", ""))
+            wl = rm.get("win_loss_ratio", 0)
+            wl_lbl = "🟢 EXCELLENT" if wl>2.5 else ("🟢 GOOD" if wl>1.5 else ("🟡 FAIR" if wl>1.0 else "🔴 POOR"))
+            risk_table.append(("Win/Loss Ratio", f"{wl:.2f}x", wl_lbl))
+            risk_table.append(("Largest Position", rm.get("largest_company","—"), ""))
+            risk_table.append(("Largest Position Weight", f"{rm.get('largest_wt',0):.1f}%", ""))
+            risk_table.append(("Largest Position Return Impact", f"{rm.get('largest_pnl_impact',0):+.2f}%", ""))
+            risk_table.append(("", "", ""))  # spacer
+
+            # Return-based metrics
+            beta = return_metrics.get("beta")
+            if beta is not None:
+                beta_lbl = "🔴 AGGRESSIVE" if beta>1.2 else ("🟡 NEUTRAL" if beta>0.8 else "🟢 DEFENSIVE")
+                risk_table.append(("Portfolio Beta", f"{beta:.2f}", beta_lbl))
+
+            sharpe = return_metrics.get("sharpe")
+            if sharpe is not None:
+                sh_lbl = "🟢 EXCELLENT" if sharpe>2 else ("🟢 GOOD" if sharpe>1 else ("🟡 FAIR" if sharpe>0.5 else "🔴 WEAK"))
+                risk_table.append(("Sharpe Ratio", f"{sharpe:.2f}", sh_lbl))
+
+            sortino = return_metrics.get("sortino")
+            if sortino is not None:
+                so_lbl = "🟢 EXCELLENT" if sortino>2 else ("🟢 GOOD" if sortino>1 else ("🟡 FAIR" if sortino>0.5 else "🔴 WEAK"))
+                risk_table.append(("Sortino Ratio", f"{sortino:.2f}", so_lbl))
+
+            jalpha = return_metrics.get("jensen_alpha")
+            if jalpha is not None:
+                ja_lbl = "🟢 POSITIVE ALPHA" if jalpha>0 else "🔴 NEGATIVE ALPHA"
+                risk_table.append(("Jensen Alpha", f"{jalpha:+.2f}%", ja_lbl))
+
             max_dd = return_metrics.get("max_drawdown") or stats.get("max_drawdown")
-            bucket = risk_metrics.get("risk_bucket") or stats.get("risk_bucket", "Unknown")
-            c5.metric("Max Drawdown (1yr)", f"{max_dd:.1f}%" if max_dd else "N/A",
-                      delta=f"Risk: {bucket}", delta_color="inverse")
+            bucket = rm.get("risk_bucket") or stats.get("risk_bucket", "Unknown")
+            if max_dd is not None:
+                dd_lbl = f"{'🔴' if bucket in ('High','Very High') else '🟡' if bucket=='Moderate' else '🟢'} {bucket.upper()} RISK"
+                risk_table.append(("Portfolio Max Drawdown (1yr)", f"{max_dd:.1f}%", dd_lbl))
+                risk_table.append(("Risk Classification", bucket, ""))
+
+            # Display as a clean table (pd is already imported at top of file)
+            rt_df = pd.DataFrame([r for r in risk_table if r[0]], columns=["Metric", "Value", "Risk Level"])
+            st.dataframe(rt_df, width="stretch", hide_index=True)
+
             st.markdown("---")
             st.markdown("#### Risk Flags")
             for flag in (risk_flags or []):
@@ -525,6 +618,7 @@ if st.session_state["holdings"] is not None:
                 elif "🟡" in lvl: st.warning(lvl)
                 elif "✅" in lvl: st.success(lvl)
                 else: st.info(lvl)
+
         if st.session_state["figs_risk"]:
             st.markdown("---")
             st.pyplot(st.session_state["figs_risk"], width="stretch")
@@ -548,6 +642,55 @@ if st.session_state["holdings"] is not None:
                       sum(1 for v in verdicts.values() if v and v.get("label") in ("RICH","EXPENSIVE")))
             st.markdown("---")
 
+            # ── CONVICTION DECISION RANKING (Module 5.6 logic) ───────────────
+            # Composite (0-10) → Conviction (0-100) → Decision = Comp×10×0.65 + Conv×0.35 → Action
+            st.markdown("#### Decision Ranking — Conviction Engine (Module 5.6)")
+            st.caption("Decision Score = (Composite × 0.65) + (Conviction × 0.35) | Score shown on 0-10 scale to match notebook")
+            conv_rows = []
+            for _, row in holdings.iterrows():
+                ticker = row["Ticker"]
+                v  = verdicts.get(ticker) or {}
+                ac = actions.get(ticker) or {}
+                sc_100  = v.get("score") or 0
+                sc_10   = round(sc_100 / 10, 1)          # convert 0-100 → 0-10 for display
+                conv    = ac.get("conviction_score", 50)
+                decision = ac.get("decision_score", 0)
+                signal  = ac.get("signal", "—")
+                conv_rows.append({
+                    "Ticker":          ticker,
+                    "Company":         row["Company"][:22],
+                    "Composite (0-10)": sc_10,
+                    "Conviction":      conv,
+                    "Decision Score":  decision,
+                    "Action":          signal,
+                    "Verdict":         v.get("label", "—"),
+                })
+            conv_df = (pd.DataFrame(conv_rows)
+                         .sort_values("Decision Score", ascending=False)
+                         .reset_index(drop=True))
+            conv_df.index += 1  # rank from 1
+
+            # Color-code Action column
+            action_colors = {
+                "STRONG_INCREASE": "background-color:#DCFCE7; color:#15803D; font-weight:700",
+                "INCREASE":        "background-color:#DBEAFE; color:#1D4ED8; font-weight:700",
+                "HOLD":            "background-color:#FEF9C3; color:#854D0E; font-weight:700",
+                "REDUCE":          "background-color:#FEF3C7; color:#D97706; font-weight:700",
+                "STRONG_REDUCE":   "background-color:#FEE2E2; color:#DC2626; font-weight:700",
+            }
+            def _color_action(val):
+                return action_colors.get(val, "")
+
+            styled_conv = conv_df.style.applymap(_color_action, subset=["Action"]).format({
+                "Composite (0-10)": "{:.1f}",
+                "Conviction":       "{:.0f}",
+                "Decision Score":   "{:.2f}",
+            }, na_rep="—")
+            st.dataframe(styled_conv, width="stretch")
+
+            st.markdown("---")
+            st.markdown("#### Holdings Detail — Fundamentals, Peer Multiples & Scenarios")
+
             val_rows = []
             for _, row in holdings.iterrows():
                 ticker = row["Ticker"]
@@ -557,17 +700,17 @@ if st.session_state["holdings"] is not None:
                 ac = actions.get(ticker) or {}
                 val_rows.append({
                     "Company": row["Company"][:22], "Sector": row["Sector"][:16],
-                    "Score": v.get("score"), "Verdict": v.get("label","—"),
+                    "Score/10": round((v.get("score") or 0) / 10, 1),
+                    "Verdict": v.get("label","—"),
                     "PE": d.get("pe"), "PB": d.get("pb"), "EV/EBITDA": d.get("ev_ebitda"),
                     "ROCE%": d.get("roce"), "ROE%": d.get("roe"), "RevCAGR%": d.get("rev_cagr_3y"),
                     "Bear %": (sc.get("bear") or {}).get("return_pct"),
                     "Bull %": (sc.get("bull") or {}).get("return_pct"),
                     "Asymmetry": sc.get("asymmetry_ratio"),
-                    "Signal": ac.get("signal","—"),
                 })
             val_df = pd.DataFrame(val_rows)
             st.dataframe(val_df.style.format({
-                "Score": "{:.0f}", "PE": "{:.1f}", "PB": "{:.2f}",
+                "Score/10": "{:.1f}", "PE": "{:.1f}", "PB": "{:.2f}",
                 "EV/EBITDA": "{:.1f}", "ROCE%": "{:.1f}", "ROE%": "{:.1f}",
                 "RevCAGR%": "{:.1f}", "Bear %": "{:+.1f}%", "Bull %": "{:+.1f}%",
                 "Asymmetry": "{:.2f}x",
