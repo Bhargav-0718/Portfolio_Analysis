@@ -46,9 +46,10 @@ except ImportError:
     def get_risk_bucket(*_a, **_k):
         return "Unknown"
 from modules.m5a_data      import run_data_layer, BUSINESS_MODEL
-from modules.m5b_intelligence import (run_intelligence_layer, plot_valuation_dashboard,
+from modules.m5b_intelligence import (plot_valuation_dashboard,
     plot_score_heatmap, plot_premium_discount, plot_radar_charts,
     portfolio_misalignment_table, detect_portfolio_style)
+from modules.m5b_valuation import run_notebook_valuation   # notebook-exact M5.3 scoring
 from modules.m5c_scenario  import run_scenario_engine
 from modules.m5d_action    import run_action_engine, portfolio_action_summary
 from modules.m5e_context   import build_context_json
@@ -298,7 +299,8 @@ if run_btn and portfolio_file:
 
         def sp_cb(_ticker, company, status): st.write(f"  {company}: {status}")
         clean_data = run_data_layer(holdings, all_screener_files, sp_cb)
-        verdicts   = run_intelligence_layer(clean_data)
+        # Notebook-exact M5.3 scoring (peer comparison via yfinance)
+        verdicts   = run_notebook_valuation(holdings, sp_cb)
         fig_val    = plot_valuation_dashboard(clean_data, verdicts, holdings, report_date)
         # New visualizations + intelligence
         fig_heatmap  = plot_score_heatmap(clean_data, verdicts, holdings)
@@ -719,32 +721,76 @@ if st.session_state["holdings"] is not None:
             st.markdown("---")
             for _, row in holdings.iterrows():
                 ticker = row["Ticker"]
-                d = clean_data.get(ticker) or {}
                 v = verdicts.get(ticker) or {}
-                if not d: continue
-                _sc = v.get("score")
-                _sc_str = f"{_sc:.0f}" if _sc is not None else "N/A"
-                with st.expander(f"{row['Company']}  |  {v.get('label', '—')}  ({_sc_str}/100)"):
-                    _has_data = d.get("revenue") is not None
+                d = clean_data.get(ticker) or {}
+                _sc10  = v.get("score_10")
+                _sc_str = f"{_sc10:.2f}/10" if _sc10 is not None else "N/A"
+                _lbl    = v.get("label", "⚪ No Data")
+                _tmpl   = v.get("template", "")
 
-                    if not _has_data:
-                        st.info("📂 No Screener file uploaded — upload the Excel from screener.in to see fundamentals.")
+                with st.expander(f"{row['Company']}  [{_tmpl}]  |  {_lbl}  ({_sc_str})"):
+                    # Header: flags + template
+                    for fl in v.get("flags", []):
+                        st.caption(f"📌 {fl}")
+
+                    # ── Per-metric detail table (notebook M5.3 style) ────────
+                    metric_details = v.get("metric_details", [])
+                    if metric_details:
+                        st.markdown("**Peer-Comparison Valuation (per metric):**")
+                        tbl_rows = []
+                        for m in metric_details:
+                            h_v   = m.get("h_val")
+                            p_v   = m.get("peer_med")
+                            pd_v  = m.get("prem_disc")
+                            s_v   = m.get("score")
+                            wt_v  = m.get("weight", 0)
+                            n_v   = m.get("peer_n", 0)
+                            tbl_rows.append({
+                                "Metric":     m.get("label", m.get("metric","")),
+                                "Hold":       f"{h_v:.2f}" if h_v is not None else "—",
+                                "PeerMed":    f"{p_v:.2f}" if p_v is not None else "—",
+                                "Prem/Disc":  f"{pd_v:+.1f}%" if pd_v is not None else "—",
+                                "Score":      f"{int(s_v)}/10" if s_v is not None else "—",
+                                "Weight":     f"{wt_v*100:.0f}%",
+                                "Peers (n)":  f"(n={n_v})",
+                            })
+                        tbl_df = pd.DataFrame(tbl_rows)
+
+                        def _color_score(val):
+                            try:
+                                n = int(val.split("/")[0])
+                                if n >= 8: return "color:#15803D; font-weight:700"
+                                if n >= 6: return "color:#1D4ED8"
+                                if n >= 4: return "color:#D97706"
+                                return "color:#DC2626"
+                            except Exception:
+                                return ""
+
+                        st.dataframe(
+                            tbl_df.style.map(_color_score, subset=["Score"]),
+                            width="stretch", hide_index=True,
+                        )
+                        dc = v.get("data_completeness", 0)
+                        st.caption(f"COMPOSITE: **{_sc_str}**  {_lbl}  |  Data coverage: {dc:.0f}%")
                     else:
-                        def _fmt(val, unit="", fmt=","):
-                            if val is None: return "—"
-                            return f"{val:{fmt}.1f}{unit}" if isinstance(val, float) else f"{val}{unit}"
+                        st.info("No peer comparison data — analysis running or ticker not in scoring universe.")
 
+                    # ── Screener fundamentals (if available) ─────────────────
+                    if d.get("revenue") is not None:
+                        st.markdown("---")
+                        st.markdown("**Screener Fundamentals:**")
+                        def _fmt(val, unit=""):
+                            if val is None: return "—"
+                            return f"{val:.1f}{unit}" if isinstance(val, float) else f"{val}{unit}"
                         c1, c2 = st.columns(2)
                         with c1:
                             rev = d.get("revenue")
-                            st.write(f"Revenue: {'₹{:,.0f} Cr'.format(rev) if rev else '—'} | EBITDA Margin: {_fmt(d.get('ebitda_margin'), '%')}")
+                            st.write(f"Revenue: {'Rs.{:,.0f} Cr'.format(rev) if rev else '—'} | EBITDA Margin: {_fmt(d.get('ebitda_margin'), '%')}")
                             st.write(f"ROCE: {_fmt(d.get('roce'), '%')} | ROE: {_fmt(d.get('roe'), '%')}")
                             st.write(f"D/E: {_fmt(d.get('de_ratio'), 'x')} | ND/EBITDA: {_fmt(d.get('nd_ebitda'), 'x')}")
                         with c2:
                             st.write(f"Rev CAGR 3yr: {_fmt(d.get('rev_cagr_3y'), '%')}")
                             st.write(f"PAT CAGR 3yr: {_fmt(d.get('pat_cagr_3y'), '%')}")
-                            if v.get("flags"):
-                                for fl in v["flags"][:4]: st.write(f"• {fl}")
 
         if st.session_state["figs_valuation"]:
             st.markdown("---")

@@ -44,43 +44,45 @@ TEMPLATE_ADJUSTMENTS = {
 }
 
 
-def _build_conviction_score(score: float, d: dict, btype: str) -> float:
+def _build_conviction_score(verdict: dict, btype: str) -> float:
     """
     Build conviction score 0–100 from multiple factors.
-    Per Req.md Module 5.6 spec.
+    Exact Module 5.6 logic from Final_Project_Code.ipynb.
+    Uses score_10 (0-10 scale) directly — same thresholds as notebook.
     """
     conviction = 50.0
 
-    # Valuation score contribution
-    if score is not None:
-        s_norm = score / 10.0          # convert 0-100 scale to 0-10
-        if s_norm >= 8:     conviction += 15
-        elif s_norm >= 6:   conviction += 10
-        elif s_norm >= 4:   conviction += 5
-        else:               conviction -= 10
+    # Valuation score (0-10 scale — same thresholds as notebook M5.6)
+    score_10 = verdict.get("score_10")
+    if score_10 is not None:
+        if score_10 >= 8:     conviction += 15
+        elif score_10 >= 6:   conviction += 10
+        elif score_10 >= 4:   conviction += 5
+        else:                 conviction -= 10
 
-    # ROE quality
-    roe = d.get("roe") or 0
+    # ROE quality (from yfinance via m5b_valuation)
+    roe = verdict.get("roe") or 0
     if roe >= 20:    conviction += 15
     elif roe >= 15:  conviction += 10
     elif roe < 8:    conviction -= 10
 
-    # Data completeness (confidence)
-    completeness = d.get("confidence", 100)
-    if completeness < 70:   conviction -= 10
+    # Data completeness (from m5b_valuation)
+    completeness = verdict.get("data_completeness", 100) or 100
+    if completeness < 70:    conviction -= 10
     elif completeness >= 95: conviction += 5
 
-    # Count valid metrics
-    metric_keys = ["pe", "pb", "ev_ebitda", "roce", "roe", "ebitda_margin", "rev_cagr_3y"]
-    valid_metrics = sum(1 for k in metric_keys if d.get(k) is not None)
+    # Valid metrics (from m5b_valuation)
+    valid_metrics = verdict.get("valid_metrics", 0) or 0
     if valid_metrics >= 4:   conviction += 10
     elif valid_metrics <= 1: conviction -= 10
 
     # Template-specific adjustments
-    conviction += TEMPLATE_ADJUSTMENTS.get(btype, 0)
+    template = verdict.get("template", "")
+    if "BANK" in template:   conviction += 5
+    if "POWER" in template:  conviction -= 5
 
-    # PE-level adjustment
-    pe = d.get("pe")
+    # PE-level adjustment (from yfinance)
+    pe = verdict.get("pe")
     if pe:
         if pe <= 15:   conviction += 5
         elif pe >= 40: conviction -= 5
@@ -88,15 +90,16 @@ def _build_conviction_score(score: float, d: dict, btype: str) -> float:
     return round(min(100, max(0, conviction)), 1)
 
 
-def _build_decision_score(composite_score: float, conviction: float) -> float:
+def _build_decision_score(score_10: float, conviction: float) -> float:
     """
-    Decision Score = (Composite Score × 0.65) + (Conviction × 0.35)
-    Per Req.md spec: (Composite Score × 10 × 0.65) + (Conviction × 0.35)
-    We use 0-100 scale throughout.
+    Decision Score — EXACT notebook formula (Module 5.6):
+        decision = score(0-10) × 10 × 0.65 + conviction(0-100) × 0.35
+    Max = 10 × 10 × 0.65 + 100 × 0.35 = 65 + 35 = 100
     """
-    if composite_score is None:
-        composite_score = 44.0   # neutral
-    return round((composite_score * 0.65) + (conviction * 0.35), 1)
+    import math
+    if score_10 is None or (isinstance(score_10, float) and math.isnan(score_10)):
+        score_10 = 4.4   # neutral fallback (≈ median score)
+    return round((score_10 * 10 * 0.65) + (conviction * 0.35), 2)
 
 
 def _signal_from_decision(decision_score: float) -> str:
@@ -157,9 +160,11 @@ def run_action_engine(
             }
             continue
 
-        # Build conviction and decision scores
-        conviction_score = _build_conviction_score(score, d, btype)
-        decision_score   = _build_decision_score(score, conviction_score)
+        # Build conviction using verdict dict (notebook-exact logic)
+        # score_10 = notebook's 0-10 composite from peer comparison
+        score_10 = v.get("score_10")
+        conviction_score = _build_conviction_score(v, btype)
+        decision_score   = _build_decision_score(score_10, conviction_score)
         signal           = _signal_from_decision(decision_score)
 
         # Override: VALUE_TRAP → force REDUCE/STRONG_REDUCE
@@ -177,11 +182,11 @@ def run_action_engine(
         rationale = _sizing_rationale(signal, current_wt, lo, hi)
 
         # Human-readable reason
-        score_str = f"{score:.0f}/100" if score is not None else "N/A"
+        sc10_str = f"{score_10:.2f}/10" if score_10 is not None else "N/A"
         reason = (
-            f"Decision score {decision_score:.0f} "
-            f"[Valuation {score_str} × 0.65 + Conviction {conviction_score:.0f} × 0.35]. "
-            f"ROE {d.get('roe') or '—'}%."
+            f"Decision score {decision_score:.2f} "
+            f"[Score {sc10_str} × 10 × 0.65 + Conviction {conviction_score:.0f} × 0.35]. "
+            f"ROE {v.get('roe') or '—'}%."
         )
 
         actions[ticker] = {
