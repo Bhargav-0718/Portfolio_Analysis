@@ -681,7 +681,7 @@ if st.session_state["holdings"] is not None:
             def _color_action(val):
                 return action_colors.get(val, "")
 
-            styled_conv = conv_df.style.applymap(_color_action, subset=["Action"]).format({
+            styled_conv = conv_df.style.map(_color_action, subset=["Action"]).format({
                 "Composite (0-10)": "{:.1f}",
                 "Conviction":       "{:.0f}",
                 "Decision Score":   "{:.2f}",
