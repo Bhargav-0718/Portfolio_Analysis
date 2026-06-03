@@ -496,13 +496,14 @@ if st.session_state["holdings"] is not None:
         if attrib_df is not None:
             st.markdown("#### Sector-Level Attribution (BHB)")
             disp_cols = [c for c in ["Sector","Port_Wt%","Bench_Wt%","Active_Bet%",
-                                      "Port_Return%","Bench_Return%","Allocation","Selection","Interaction","Active_Return"]
+                                      "Port_Return%","Bench_Return%","Return_Diff%","Allocation","Selection","Interaction","Total_Alpha"]
                          if c in attrib_df.columns]
             st.dataframe(attrib_df[disp_cols].style.format({
                 "Port_Wt%": "{:.1f}%", "Bench_Wt%": "{:.1f}%", "Active_Bet%": "{:+.1f}%",
                 "Port_Return%": "{:+.1f}%", "Bench_Return%": "{:+.1f}%",
+                "Return_Diff%": "{:+.1f}%",
                 "Allocation": "{:+.4f}%", "Selection": "{:+.4f}%",
-                "Interaction": "{:+.4f}%", "Active_Return": "{:+.4f}%",
+                "Interaction": "{:+.4f}%", "Total_Alpha": "{:+.4f}%",
             }, na_rep="—"), width="stretch")
 
         # ── Top Contributors / Bottom Detractors ──────────────────────────────
