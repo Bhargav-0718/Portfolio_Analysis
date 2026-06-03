@@ -636,15 +636,24 @@ if st.session_state["holdings"] is not None:
         if not verdicts:
             st.warning("Upload Screener Excel files in sidebar to run fundamental analysis.")
         else:
-            valid_scores = [v["score"] for v in verdicts.values() if v and v.get("score")]
-            avg = sum(valid_scores) / len(valid_scores) if valid_scores else 0
+            # New labels from m5b_valuation (notebook-exact): 💎 Cheap, 🟢 Moderately Cheap,
+            # 🟡 Fair Value, 🟠 Moderately Expensive, 🔴 Expensive
+            CHEAP_LABELS     = {"💎 Cheap", "🟢 Moderately Cheap"}
+            EXPENSIVE_LABELS = {"🔴 Expensive", "🟠 Moderately Expensive"}
+
+            valid_scores = [v["score_10"] for v in verdicts.values()
+                            if v and v.get("score_10") is not None]
+            avg_10 = sum(valid_scores) / len(valid_scores) if valid_scores else 0
+
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Analysed", len(valid_scores))
-            c2.metric("Avg Score", f"{avg:.1f}/100")
-            c3.metric("Deep Value + Attractive",
-                      sum(1 for v in verdicts.values() if v and v.get("label") in ("DEEP VALUE","ATTRACTIVE")))
-            c4.metric("Rich + Expensive",
-                      sum(1 for v in verdicts.values() if v and v.get("label") in ("RICH","EXPENSIVE")))
+            c1.metric("Analysed",            len(valid_scores))
+            c2.metric("Avg Score (0-10)",    f"{avg_10:.2f}/10")
+            c3.metric("Cheap + Mod. Cheap",
+                      sum(1 for v in verdicts.values()
+                          if v and v.get("label","") in CHEAP_LABELS))
+            c4.metric("Expensive + Mod. Exp",
+                      sum(1 for v in verdicts.values()
+                          if v and v.get("label","") in EXPENSIVE_LABELS))
             st.markdown("---")
 
             # ── CONVICTION DECISION RANKING (Module 5.6 logic) ───────────────
@@ -656,8 +665,7 @@ if st.session_state["holdings"] is not None:
                 ticker = row["Ticker"]
                 v  = verdicts.get(ticker) or {}
                 ac = actions.get(ticker) or {}
-                sc_100  = v.get("score") or 0
-                sc_10   = round(sc_100 / 10, 1)          # convert 0-100 → 0-10 for display
+                sc_10   = v.get("score_10")               # native 0-10 from m5b_valuation
                 conv    = ac.get("conviction_score", 50)
                 decision = ac.get("decision_score", 0)
                 signal  = ac.get("signal", "—")
@@ -705,7 +713,7 @@ if st.session_state["holdings"] is not None:
                 ac = actions.get(ticker) or {}
                 val_rows.append({
                     "Company": row["Company"][:22], "Sector": row["Sector"][:16],
-                    "Score/10": round((v.get("score") or 0) / 10, 1),
+                    "Score/10": v.get("score_10"),  # native 0-10 from m5b_valuation
                     "Verdict": v.get("label","—"),
                     "PE": d.get("pe"), "PB": d.get("pb"), "EV/EBITDA": d.get("ev_ebitda"),
                     "ROCE%": d.get("roce"), "ROE%": d.get("roe"), "RevCAGR%": d.get("rev_cagr_3y"),
@@ -859,11 +867,15 @@ if st.session_state["holdings"] is not None:
             action_sum = portfolio_action_summary(actions, holdings)
             counts = action_sum.get("signal_counts", {})
             c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("ACCUMULATE", counts.get("ACCUMULATE", 0))
-            c2.metric("HOLD",       counts.get("HOLD", 0))
-            c3.metric("TRIM",       counts.get("TRIM", 0))
-            c4.metric("EXIT",       counts.get("EXIT", 0))
-            c5.metric("Net Bias",   action_sum.get("net_bias", "—"))
+            # Actual signal keys: STRONG_INCREASE, INCREASE, HOLD, REDUCE, STRONG_REDUCE
+            acc  = counts.get("STRONG_INCREASE", 0) + counts.get("INCREASE", 0)
+            trim = counts.get("REDUCE", 0)
+            exit_= counts.get("STRONG_REDUCE", 0)
+            c1.metric("ACCUMULATE ↑", acc)
+            c2.metric("HOLD",         counts.get("HOLD", 0))
+            c3.metric("TRIM ↓",       trim)
+            c4.metric("EXIT ↓↓",      exit_)
+            c5.metric("Net Bias",     action_sum.get("net_bias", "—"))
 
             if action_sum.get("accumulate_names"):
                 st.success(f"🟢 **Add to:** {', '.join(action_sum['accumulate_names'])}")
