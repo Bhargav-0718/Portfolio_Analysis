@@ -300,7 +300,9 @@ if run_btn and portfolio_file:
         def sp_cb(_ticker, company, status): st.write(f"  {company}: {status}")
         clean_data = run_data_layer(holdings, all_screener_files, sp_cb)
         # Notebook-exact M5.3 scoring (peer comparison via yfinance)
-        verdicts   = run_notebook_valuation(holdings, sp_cb)
+        # run_notebook_valuation uses a single-arg callback (message string only)
+        def val_cb(msg): st.write(f"  {msg}")
+        verdicts   = run_notebook_valuation(holdings, val_cb)
         fig_val    = plot_valuation_dashboard(clean_data, verdicts, holdings, report_date)
         # New visualizations + intelligence
         fig_heatmap  = plot_score_heatmap(clean_data, verdicts, holdings)
