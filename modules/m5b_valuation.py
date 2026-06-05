@@ -407,7 +407,8 @@ def get_label(score: float) -> str:
 def run_notebook_valuation(
     holdings_df,
     progress_callback=None,
-    clean_data: dict = None,
+    clean_data=None,
+    **kwargs,          # absorb any extra keyword args for backward compat
 ) -> dict:
     """
     Full notebook M5.1 + M5.2 + M5.3 scoring pipeline.
