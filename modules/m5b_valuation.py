@@ -204,61 +204,91 @@ def _safe(val) -> float:
         return np.nan
 
 
-def fetch_one_ticker(ticker: str) -> dict:
+def fetch_one_ticker(ticker: str, screener_fallback: dict = None) -> dict:
     """
     Fetch fundamental metrics for one ticker via yfinance.info.
-    Returns dict with keys: pe, pb, ev_ebitda, ev_sales, ps,
-    net_debt_ebitda, div_yield, roe + bank metrics from MANUAL_BANK_METRICS.
+    Falls back to fast_info, then to screener_fallback dict if yfinance returns empty.
+    screener_fallback: dict from M5A clean_data (pe, pb, ev_ebitda, roe, etc.)
     """
     rec = {}
+    info = {}
+
+    # Attempt 1: yfinance .info (full fundamentals)
     try:
-        info = yf.Ticker(ticker).info
-
-        pe  = _safe(info.get("trailingPE"))
-        pb  = _safe(info.get("priceToBook"))
-        ev  = _safe(info.get("enterpriseValue"))
-        rev = _safe(info.get("totalRevenue"))
-        ebitda = _safe(info.get("ebitda"))
-        debt   = _safe(info.get("totalDebt", 0)) or 0
-        cash   = _safe(info.get("totalCash", 0)) or 0
-        roe    = _safe(info.get("returnOnEquity"))
-        ps_val = _safe(info.get("priceToSalesTrailing12Months"))
-        div    = _safe(info.get("dividendYield"))
-
-        # Sanitize extremes
-        if not np.isnan(pe)  and pe  > DQ["max_pe"]:          pe  = np.nan
-        if not np.isnan(pb)  and pb  > DQ["max_pb"]:          pb  = np.nan
-        if not np.isnan(ebitda) and ebitda <= 0:               ebitda = np.nan
-
-        ev_ebitda = _safe(info.get("enterpriseToEbitda"))
-        if np.isnan(ev_ebitda) and not np.isnan(ev) and not np.isnan(ebitda):
-            ev_ebitda = ev / ebitda
-        if not np.isnan(ev_ebitda) and ev_ebitda > DQ["max_ev_ebitda"]:
-            ev_ebitda = np.nan
-
-        ev_sales = np.nan
-        if not np.isnan(ev) and not np.isnan(rev) and rev > 0:
-            ev_sales = ev / rev
-
-        net_debt = debt - cash
-        net_debt_ebitda = np.nan
-        if not np.isnan(ebitda) and ebitda > 0:
-            nd_e = net_debt / ebitda
-            if abs(nd_e) <= DQ["max_net_debt_ebitda"]:
-                net_debt_ebitda = nd_e
-
-        rec = {
-            "pe":              pe,
-            "pb":              pb,
-            "ev_ebitda":       ev_ebitda,
-            "ev_sales":        ev_sales,
-            "ps":              ps_val,
-            "net_debt_ebitda": net_debt_ebitda,
-            "div_yield":       (_safe(div) * 100) if not np.isnan(_safe(div)) else np.nan,
-            "roe":             (_safe(roe) * 100) if not np.isnan(_safe(roe)) else np.nan,
-        }
+        t = yf.Ticker(ticker)
+        info = t.info or {}
+        # If info is a stub (only has "regularMarketPrice" type keys), treat as empty
+        if len([k for k in info if info[k] is not None]) < 5:
+            info = {}
     except Exception:
-        pass
+        info = {}
+
+    # Attempt 2: fast_info as supplement if .info is sparse
+    if not info.get("trailingPE") and not info.get("priceToBook"):
+        try:
+            t2  = yf.Ticker(ticker)
+            fi  = t2.fast_info
+            if not info.get("trailingPE"):
+                pe_fi = getattr(fi, "trailing_pe", None) or getattr(fi, "three_month_average_volume", None)
+                if pe_fi: info["trailingPE"] = pe_fi
+        except Exception:
+            pass
+
+    pe  = _safe(info.get("trailingPE"))
+    pb  = _safe(info.get("priceToBook"))
+    ev  = _safe(info.get("enterpriseValue"))
+    rev = _safe(info.get("totalRevenue"))
+    ebitda = _safe(info.get("ebitda"))
+    debt   = _safe(info.get("totalDebt", 0)) or 0
+    cash   = _safe(info.get("totalCash", 0)) or 0
+    roe    = _safe(info.get("returnOnEquity"))
+    ps_val = _safe(info.get("priceToSalesTrailing12Months"))
+    div    = _safe(info.get("dividendYield"))
+
+    # Fallback to Screener M5A data if yfinance returned nothing useful
+    sf = screener_fallback or {}
+    if np.isnan(pe)  and sf.get("pe"):      pe     = _safe(sf["pe"])
+    if np.isnan(pb)  and sf.get("pb"):      pb     = _safe(sf["pb"])
+    if np.isnan(roe) and sf.get("roe"):     roe    = _safe(sf["roe"])
+    if np.isnan(ebitda) and sf.get("ebitda"): ebitda = _safe(sf["ebitda"])
+
+    # Sanitize extremes
+    if not np.isnan(pe)  and pe  > DQ["max_pe"]:    pe  = np.nan
+    if not np.isnan(pb)  and pb  > DQ["max_pb"]:    pb  = np.nan
+    if not np.isnan(ebitda) and ebitda <= 0:         ebitda = np.nan
+
+    ev_ebitda = _safe(info.get("enterpriseToEbitda"))
+    # Fallback from Screener
+    if np.isnan(ev_ebitda) and sf.get("ev_ebitda"): ev_ebitda = _safe(sf["ev_ebitda"])
+    if np.isnan(ev_ebitda) and not np.isnan(ev) and not np.isnan(ebitda):
+        ev_ebitda = ev / ebitda
+    if not np.isnan(ev_ebitda) and ev_ebitda > DQ["max_ev_ebitda"]:
+        ev_ebitda = np.nan
+
+    ev_sales = np.nan
+    if not np.isnan(ev) and not np.isnan(rev) and rev > 0:
+        ev_sales = ev / rev
+
+    net_debt = debt - cash
+    net_debt_ebitda = np.nan
+    if not np.isnan(ebitda) and ebitda > 0:
+        nd_e = net_debt / ebitda
+        if abs(nd_e) <= DQ["max_net_debt_ebitda"]:
+            net_debt_ebitda = nd_e
+    # nd_ebitda from Screener
+    if np.isnan(net_debt_ebitda) and sf.get("nd_ebitda"):
+        net_debt_ebitda = _safe(sf["nd_ebitda"])
+
+    rec = {
+        "pe":              pe,
+        "pb":              pb,
+        "ev_ebitda":       ev_ebitda,
+        "ev_sales":        ev_sales,
+        "ps":              ps_val,
+        "net_debt_ebitda": net_debt_ebitda,
+        "div_yield":       (_safe(div) * 100) if not np.isnan(_safe(div)) else np.nan,
+        "roe":             (_safe(roe) * 100) if not np.isnan(_safe(roe)) else np.nan,
+    }
 
     # Inject manual bank metrics
     bank = MANUAL_BANK_METRICS.get(ticker, {})
@@ -270,16 +300,19 @@ def fetch_one_ticker(ticker: str) -> dict:
 
 def build_ticker_lookup(
     holding_tickers: list,
+    clean_data: dict = None,
     progress_callback=None,
 ) -> dict:
     """
     Fetch data for all holdings + their peers.
+    clean_data: M5A Screener data used as fallback when yfinance returns empty.
     Returns TICKER_LOOKUP: {ticker: {metric: value}}
     """
-    # Collect all unique tickers
+    clean_data = clean_data or {}
+
+    # Collect all unique tickers (holdings + peers)
     all_tickers = set(holding_tickers)
     for t in holding_tickers:
-        ns_key = t.replace(".NS", "")
         peers = PEER_GROUPS.get(t, [])
         all_tickers.update(peers)
 
@@ -287,10 +320,18 @@ def build_ticker_lookup(
     for ticker in sorted(all_tickers):
         if ticker in SKIP_VALUATION:
             continue
+        # Screener fallback only available for holdings (not peers)
+        sf = clean_data.get(ticker) or {}
         try:
-            lookup[ticker] = fetch_one_ticker(ticker)
+            lookup[ticker] = fetch_one_ticker(ticker, screener_fallback=sf)
         except Exception:
-            lookup[ticker] = {}
+            # Last resort: use only Screener data
+            lookup[ticker] = {
+                "pe":       _safe(sf.get("pe")),
+                "pb":       _safe(sf.get("pb")),
+                "ev_ebitda":_safe(sf.get("ev_ebitda")),
+                "roe":      _safe(sf.get("roe")),
+            }
         if progress_callback:
             progress_callback(ticker)
 
@@ -366,6 +407,7 @@ def get_label(score: float) -> str:
 def run_notebook_valuation(
     holdings_df,
     progress_callback=None,
+    clean_data: dict = None,
 ) -> dict:
     """
     Full notebook M5.1 + M5.2 + M5.3 scoring pipeline.
@@ -404,7 +446,7 @@ def run_notebook_valuation(
         if progress_callback:
             progress_callback(f"  fetched {ticker}")
 
-    lookup = build_ticker_lookup(holding_tickers, _fetch_cb)
+    lookup = build_ticker_lookup(holding_tickers, clean_data=clean_data, progress_callback=_fetch_cb)
 
     verdicts = {}
 
