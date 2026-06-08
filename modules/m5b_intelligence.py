@@ -587,55 +587,70 @@ def plot_radar_charts(
     holdings_df,
 ) -> plt.Figure:
     """
-    Per-holding polar radar chart showing 5 factor scores vs max (10).
+    Per-holding polar radar chart — one axis per metric in that holding's own
+    valuation template (3–6 axes, varies by business model). Replicates notebook
+    Module 5.3 Block 13 ("Per-Holding Valuation Profile — Radar Charts"):
+    ranked by composite score, 3 charts per row, NaN metric scores plotted as 0.
     """
-    CATS = ["Valuation", "Quality", "Growth", "B/Sheet", "Profitability"]
-    MAX_PTS = [30, 25, 20, 15, 10]
-    N = len(CATS)
-    angles = [n / N * 2 * np.pi for n in range(N)] + [0]
-
-    valid = []
+    ranked = []
     for _, row in holdings_df.iterrows():
-        ticker = row["Ticker"]
-        v = verdicts.get(ticker) or {}
-        bd = v.get("breakdown", [])
-        if bd and len(bd) == 5:
-            valid.append((row["Company"][:18], ticker, v))
+        ticker  = row["Ticker"]
+        v       = verdicts.get(ticker) or {}
+        score_10 = v.get("score_10")
+        details  = v.get("metric_details") or []
+        if score_10 is None or not details:
+            continue
+        ranked.append((ticker, v, details))
 
-    if not valid:
+    if not ranked:
         fig, ax = plt.subplots(figsize=(10, 4))
         ax.text(0.5, 0.5, "Upload Screener files to see radar charts", transform=ax.transAxes,
                 ha="center", color=C["text3"])
         return fig
 
-    cols = 4
-    rows = max(1, (len(valid) + cols - 1) // cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(18, rows * 4.2),
+    ranked.sort(key=lambda x: x[1]["score_10"], reverse=True)
+
+    cols = 3
+    rows = max(1, (len(ranked) + cols - 1) // cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(15, rows * 4.5),
                               subplot_kw={"projection": "polar"}, facecolor=C["bg"])
-    fig.suptitle("Per-Holding Valuation Radar (5 Factors)", fontsize=11, fontweight="bold", color=C["text"])
+    fig.suptitle("Per-Holding Valuation Profile — Radar Charts", fontsize=11, fontweight="bold", color=C["text"])
 
     axes_flat = np.array(axes).flatten() if rows * cols > 1 else [axes]
 
-    for idx, (company, ticker, v) in enumerate(valid):
+    for idx, (ticker, v, details) in enumerate(ranked):
         ax = axes_flat[idx]
-        ax.set_facecolor("#F8F9FC")
-        bd = v.get("breakdown", [])
-        scores = [s / m * 10 for _, s, m in bd]  # normalize to 0–10
-        vals   = scores + scores[:1]
-        ax.plot(angles, vals, "o-", lw=1.5, color=C["blue"])
+        ax.set_facecolor("#FAFAFA")
+        labels = [d["label"] for d in details]
+        scores = [d["score"] if d["score"] is not None else np.nan for d in details]
+        n = len(scores)
+
+        if n < 3:
+            ax.text(0.5, 0.5, "Insufficient\nmetrics", ha="center", va="center",
+                    transform=ax.transAxes, fontsize=9, color=C["text3"])
+            ax.set_title(ticker, fontsize=8, color=C["text"])
+            continue
+
+        angles = [i / n * 2 * np.pi for i in range(n)] + [0]
+        clean_scores = [s if not np.isnan(s) else 0 for s in scores]
+        vals = clean_scores + clean_scores[:1]
+
+        ax.plot(angles, vals, "-", lw=1.8, color=C["blue"])
         ax.fill(angles, vals, alpha=0.25, color=C["blue"])
-        # Max possible
-        ax.plot(angles, [10] * (N + 1), "--", lw=0.5, color=C["text3"], alpha=0.4)
+        ax.plot(angles, [10] * (n + 1), "--", lw=0.8, color=C["text3"], alpha=0.5)
         ax.set_xticks(angles[:-1])
-        ax.set_xticklabels(CATS, size=7.5)
+        ax.set_xticklabels(labels, size=7)
         ax.set_ylim(0, 10)
-        ax.set_yticks([2.5, 5, 7.5, 10])
-        ax.set_yticklabels([], size=0)
-        sc_str = f"{v.get('score'):.0f}" if v.get("score") else "N/A"
-        ax.set_title(f"{company}\n{v.get('label', '')} {sc_str}/100", size=7.5, pad=10, color=C["text"])
+        ax.set_yticks([2, 4, 6, 8, 10])
+        ax.set_yticklabels(["2", "4", "6", "8", "10"], size=6, color=C["text3"])
+        ax.tick_params(axis="x", pad=5)
+
+        score_10 = v.get("score_10")
+        sc_str = f"{score_10:.1f}/10" if score_10 is not None else "N/A"
+        ax.set_title(f"{ticker}\n{sc_str}  {v.get('label', '')}", size=8, fontweight="bold", pad=12, color=C["text"])
 
     # Hide unused subplots
-    for idx in range(len(valid), len(axes_flat)):
+    for idx in range(len(ranked), len(axes_flat)):
         axes_flat[idx].set_visible(False)
 
     plt.tight_layout()
