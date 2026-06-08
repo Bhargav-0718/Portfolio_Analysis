@@ -868,6 +868,28 @@ if st.session_state["holdings"] is not None:
         if not scenarios:
             st.warning("Run Full Analysis first to generate scenarios and action signals.")
         else:
+            # Portfolio action summary
+            action_sum = portfolio_action_summary(actions, holdings)
+            counts = action_sum.get("signal_counts", {})
+            c1, c2, c3, c4, c5 = st.columns(5)
+            # Actual signal keys: STRONG_INCREASE, INCREASE, HOLD, REDUCE, STRONG_REDUCE
+            acc  = counts.get("STRONG_INCREASE", 0) + counts.get("INCREASE", 0)
+            trim = counts.get("REDUCE", 0)
+            exit_= counts.get("STRONG_REDUCE", 0)
+            c1.metric("ACCUMULATE ↑", acc)
+            c2.metric("HOLD",         counts.get("HOLD", 0))
+            c3.metric("TRIM ↓",       trim)
+            c4.metric("EXIT ↓↓",      exit_)
+            c5.metric("Net Bias",     action_sum.get("net_bias", "—"))
+
+            if action_sum.get("accumulate_names"):
+                st.success(f"🟢 **Add to:** {', '.join(action_sum['accumulate_names'])}")
+            if action_sum.get("trim_names"):
+                st.warning(f"🟡 **Trim:** {', '.join(action_sum['trim_names'])}")
+            if action_sum.get("exit_names"):
+                st.error(f"🔴 **Exit:** {', '.join(action_sum['exit_names'])}")
+
+            st.markdown("---")
             st.markdown("#### Per-Holding Scenarios & Signals")
 
             for _, row in holdings.iterrows():
